@@ -8,6 +8,9 @@ namespace AreaCapture.Runtime
     /// </summary>
     public class RuntimeAreaCapture
     {
+        /// <summary>Distance the capture camera sits back from the box face, in world units.</summary>
+        private const float CameraStandoff = 10f;
+
         private Camera persistentCamera;
         private GameObject cameraHolder;
 
@@ -52,99 +55,70 @@ namespace AreaCapture.Runtime
             }
         }
 
-        public Texture2D CaptureArea(CaptureZone captureZone, int pixelPerUnit, CameraClearFlags clearFlags = CameraClearFlags.SolidColor, Color backgroundColor = default, int cullingMask = -1, CaptureAxis? axisOverride = null)
+        /// <summary>
+        /// Renders one tile of one face of a zone. The camera looks in from the face along the zone's own
+        /// axes, so a rotated zone is captured aligned to itself, and is shifted in the image plane to the
+        /// tile's centre. Returns null if the tile exceeds the hardware texture limit.
+        /// </summary>
+        public Texture2D CaptureTile(CaptureZone zone, TileJob job, CameraClearFlags clearFlags = CameraClearFlags.SolidColor,
+            Color backgroundColor = default, int cullingMask = -1)
         {
-            if (captureZone == null)
+            if (zone == null)
                 return null;
 
-            CaptureAxis axis = axisOverride ?? captureZone.Axis;
-
-            BoxCollider col = captureZone.GetComponent<BoxCollider>();
-            if (col == null)
+            if (zone.GetComponent<BoxCollider>() == null)
             {
-                Debug.LogWarning($"CaptureZone on {captureZone.gameObject.name} is missing a BoxCollider.");
+                Debug.LogWarning($"CaptureZone on {zone.gameObject.name} is missing a BoxCollider.");
                 return null;
             }
 
-            Bounds bounds = col.bounds;
-            Vector3 centerPos = bounds.center;
-            Vector3 size = bounds.size;
-            
-            float orthoSize;
-            float aspect;
-            Vector3 cameraPos;
-            Quaternion cameraRot;
-
-            // Determine camera orientation and size based on capture axis
-            switch (axis)
+            int maxResolution = SystemInfo.maxTextureSize;
+            if (job.PixelWidth > maxResolution || job.PixelHeight > maxResolution)
             {
-                case CaptureAxis.PositiveX:
-                    orthoSize = size.y * 0.5f;
-                    aspect = size.z / size.y;
-                    cameraPos = centerPos + captureZone.transform.right * (size.x * 0.5f + 10f);
-                    cameraRot = Quaternion.LookRotation(-captureZone.transform.right, captureZone.transform.up);
-                    break;
-                case CaptureAxis.NegativeX:
-                    orthoSize = size.y * 0.5f;
-                    aspect = size.z / size.y;
-                    cameraPos = centerPos + captureZone.transform.right * -(size.x * 0.5f + 10f);
-                    cameraRot = Quaternion.LookRotation(captureZone.transform.right, captureZone.transform.up);
-                    break;
-                case CaptureAxis.PositiveY:
-                    orthoSize = size.z * 0.5f;
-                    aspect = size.x / size.z;
-                    cameraPos = centerPos + captureZone.transform.up * (size.y * 0.5f + 10f);
-                    cameraRot = Quaternion.LookRotation(-captureZone.transform.up, captureZone.transform.forward);
-                    break;
-                case CaptureAxis.NegativeY:
-                    orthoSize = size.z * 0.5f;
-                    aspect = size.x / size.z;
-                    cameraPos = centerPos + captureZone.transform.up * -(size.y * 0.5f + 10f);
-                    cameraRot = Quaternion.LookRotation(captureZone.transform.up, captureZone.transform.forward);
-                    break;
-                case CaptureAxis.PositiveZ:
-                    orthoSize = size.y * 0.5f;
-                    aspect = size.x / size.y;
-                    cameraPos = centerPos + captureZone.transform.forward * (size.z * 0.5f + 10f);
-                    cameraRot = Quaternion.LookRotation(-captureZone.transform.forward, captureZone.transform.up);
-                    break;
-                case CaptureAxis.NegativeZ:
-                default:
-                    orthoSize = size.y * 0.5f;
-                    aspect = size.x / size.y;
-                    cameraPos = centerPos + captureZone.transform.forward * -(size.z * 0.5f + 10f);
-                    cameraRot = Quaternion.LookRotation(captureZone.transform.forward, captureZone.transform.up);
-                    break;
+                Debug.LogError($"Capture resolution ({job.PixelWidth}x{job.PixelHeight}) exceeds system maximum ({maxResolution}). Lower 'Max Tile Pixels'.");
+                return null;
             }
 
-            // Get persistent camera
+            Transform t = zone.transform;
+            Vector3 center = zone.WorldCenter;
+            Vector3 size = zone.OrientedSize; // along the zone's own axes, not the world AABB
+
+            // The camera sits on the face's side of the box (toCamera) and looks back at it.
+            Vector3 toCamera;
+            Vector3 cameraUp;
+            float depth;
+            switch (job.Face)
+            {
+                case CaptureFace.Front:  toCamera = -t.forward; cameraUp = t.up;      depth = size.z; break;
+                case CaptureFace.Back:   toCamera =  t.forward; cameraUp = t.up;      depth = size.z; break;
+                case CaptureFace.Left:   toCamera = -t.right;   cameraUp = t.up;      depth = size.x; break;
+                case CaptureFace.Right:  toCamera =  t.right;   cameraUp = t.up;      depth = size.x; break;
+                case CaptureFace.Top:    toCamera =  t.up;      cameraUp = t.forward; depth = size.y; break;
+                default:                 toCamera = -t.up;      cameraUp = t.forward; depth = size.y; break;
+            }
+
             Camera cam = GetOrCreateCamera();
             cam.orthographic = true;
-            cam.orthographicSize = orthoSize;
-            cam.aspect = aspect;
 
-            // Apply camera visual settings
+            // Tile framing: an orthographic camera covering exactly this tile
+            cam.orthographicSize = job.TileHeightUnits * 0.5f;
+            cam.aspect = job.TileWidthUnits / job.TileHeightUnits;
+
             cam.clearFlags = clearFlags;
             cam.backgroundColor = backgroundColor == default ? new Color(0, 0, 0, 0) : backgroundColor;
             cam.cullingMask = cullingMask;
 
-            cam.transform.position = cameraPos;
-            cam.transform.rotation = cameraRot;
+            // Face-centred pose, then shifted within the image plane to the tile centre
+            cam.transform.rotation = Quaternion.LookRotation(-toCamera, cameraUp);
+            cam.transform.position = center + toCamera * (depth * 0.5f + CameraStandoff)
+                                     + cam.transform.right * job.OffsetU
+                                     + cam.transform.up * job.OffsetV;
 
             // Strict Clipping: show only stuff inside the box depth
-            if (captureZone.UseStrictClipping)
+            if (zone.UseStrictClipping)
             {
-                float depth;
-                switch (axis)
-                {
-                    case CaptureAxis.PositiveX:
-                    case CaptureAxis.NegativeX: depth = size.x; break;
-                    case CaptureAxis.PositiveY:
-                    case CaptureAxis.NegativeY: depth = size.y; break;
-                    default: depth = size.z; break;
-                }
-                cam.nearClipPlane = 10f - 0.01f;
-                cam.farClipPlane = 10f + depth + 0.01f;
+                cam.nearClipPlane = CameraStandoff - 0.01f;
+                cam.farClipPlane = CameraStandoff + depth + 0.01f;
             }
             else
             {
@@ -152,43 +126,49 @@ namespace AreaCapture.Runtime
                 cam.farClipPlane = 1000f;
             }
 
-            // Calculate target resolution
-            float widthUnits = (axis == CaptureAxis.PositiveX || axis == CaptureAxis.NegativeX) ? size.z : size.x;
-            float heightUnits = (axis == CaptureAxis.PositiveY || axis == CaptureAxis.NegativeY) ? size.z : size.y;
-            
-            int width = Mathf.Max(1, Mathf.RoundToInt(widthUnits * pixelPerUnit));
-            int height = Mathf.Max(1, Mathf.RoundToInt(heightUnits * pixelPerUnit));
-            
-            // Constrain by hardware maximum
-            int maxResolution = SystemInfo.maxTextureSize;
-            if (width > maxResolution || height > maxResolution)
+            RenderTexture rt = RenderTexture.GetTemporary(job.PixelWidth, job.PixelHeight, 24, RenderTextureFormat.ARGB32);
+            Texture2D tex = null;
+            try
             {
-                Debug.LogError($"Capture resolution ({width}x{height}) exceeds system maximum. Try smaller PPU.");
-                return null;
+                cam.targetTexture = rt;
+
+                // Get best models for render
+                float savedLodBias = QualitySettings.lodBias;
+                QualitySettings.lodBias = float.MaxValue;
+                try { cam.Render(); }
+                finally { QualitySettings.lodBias = savedLodBias; }
+
+                RenderTexture.active = rt;
+                // Always use RGBA32 to ensure alpha consistency
+                tex = new Texture2D(job.PixelWidth, job.PixelHeight, TextureFormat.RGBA32, false);
+                tex.ReadPixels(new Rect(0, 0, job.PixelWidth, job.PixelHeight), 0, 0);
+                tex.Apply();
             }
-            
-            RenderTexture rt = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
-            cam.targetTexture = rt;
-
-            // Get best models for render
-            float savedLodBias = QualitySettings.lodBias;
-            QualitySettings.lodBias = float.MaxValue;
-            cam.Render();
-            QualitySettings.lodBias = savedLodBias;
-
-            RenderTexture.active = rt;
-            // Always use RGBA32 to ensure alpha consistency
-            TextureFormat texFormat = TextureFormat.RGBA32;
-                                      
-            Texture2D tex = new Texture2D(width, height, texFormat, false);
-            tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-            tex.Apply();
-            
-            RenderTexture.active = null;
-            cam.targetTexture = null;
-            RenderTexture.ReleaseTemporary(rt);
+            finally
+            {
+                RenderTexture.active = null;
+                cam.targetTexture = null;
+                RenderTexture.ReleaseTemporary(rt);
+            }
 
             return tex;
+        }
+
+        /// <summary>
+        /// Renders a whole face of a zone as one image at a single resolution (no tiling or LoD).
+        /// Kept for callers that only need a single texture; the editor export uses <see cref="CaptureTile"/>.
+        /// </summary>
+        public Texture2D CaptureArea(CaptureZone captureZone, int pixelPerUnit, CameraClearFlags clearFlags = CameraClearFlags.SolidColor, Color backgroundColor = default, int cullingMask = -1, CaptureAxis? axisOverride = null)
+        {
+            if (captureZone == null)
+                return null;
+
+            CaptureFace face = (axisOverride ?? captureZone.Axis).ToFace();
+            Vector3 size = captureZone.OrientedSize;
+
+            // A single level with a tile budget so large that the whole face is one tile
+            List<TileJob> jobs = CapturePlanner.PlanFace(face, size.x, size.y, size.z, pixelPerUnit, 1, 0, int.MaxValue);
+            return CaptureTile(captureZone, jobs[0], clearFlags, backgroundColor, cullingMask);
         }
 
         public Dictionary<CaptureZone, Texture2D> CaptureAllZones(CaptureZone[] zones, int pixelPerUnit)

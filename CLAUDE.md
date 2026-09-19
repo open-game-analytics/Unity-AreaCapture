@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a Unity Package Manager (UPM) package (`com.komatrich.area-capture`) for capturing screenshots of designated 3D zones in a Unity scene and exporting them as PNG images with accompanying JSON metadata. It is an **editor-only tool** — users place `CaptureZone` components in their scene, open the `Window > Area Capture` editor window, configure settings, and click export.
+This is a Unity Package Manager (UPM) package (`com.komatrich.area-capture`) for capturing screenshots of designated 3D zones in a Unity scene and exporting them as PNG images (several levels of detail, tiled) with accompanying JSON metadata (schema v2). It is an **editor-only tool** — users place `CaptureZone` components in their scene, open the `Window > Area Capture` editor window, configure settings, and click export.
 
 ## Development
 
@@ -28,30 +28,40 @@ Optional dependency: **NaughtyAttributes** (`com.dbrizov.naughtyattributes`) —
 ```
 AreaCaptureWindow (UI, EditorPrefs persistence)
   └─ AreaCaptureExporter.ExportZones(zones[], ExportSettings)
-       └─ RuntimeAreaCapture.CaptureArea(zone, ppu, ...)   ← one call per zone/face
-            └─ Internal orthographic Camera → RenderTexture → Texture2D
-       └─ File.WriteAllBytes(path, texture.EncodeToPNG())
-       └─ JSON metadata → File.WriteAllText
+       ├─ BuildPlan(): zones → CapturePlanner.PlanFace() → flat list of tile jobs + CaptureMetadata (v2)
+       └─ per job (one per editor frame):
+            RuntimeAreaCapture.CaptureTile(zone, TileJob)
+              └─ Internal orthographic Camera → RenderTexture → Texture2D
+            File.WriteAllBytes(path, texture.EncodeToPNG())
+       └─ CaptureMetadataJson.Serialize(metadata) → File.WriteAllText
 ```
 
-The exporter runs asynchronously via `EditorApplication.update` (state machine) to keep the editor responsive and show a cancelable progress bar.
+The exporter runs asynchronously via `EditorApplication.update` (state machine over the precomputed job list) to keep the editor responsive and show a cancelable progress bar.
 
 ### Key classes
 
-- **`CaptureZone`** (`Runtime/CaptureZone.cs`) — `MonoBehaviour` + required `BoxCollider`. Stores axis direction, cubemap flag, strict-clipping flag, and filename override. Editor gizmo drawn in `OnDrawGizmos`.
-- **`RuntimeAreaCapture`** (`Runtime/RuntimeAreaCapture.cs`) — Stateful renderer. Owns a hidden internal camera (orthographic, non-rendering by default). `CaptureArea()` sets camera position/rotation/planes per axis, renders to RenderTexture, reads back to `Texture2D`.
-- **`AreaCaptureExporter`** (`Editor/AreaCaptureExporter.cs`) — Static export pipeline. For cubemap zones it iterates all 6 `CaptureAxis` values and appends `_Front`/`_Back`/etc. suffixes. Filenames fall back to `CaptureZone_{SanitizedName}.png` when no override is set.
-- **`CaptureMetadata` / `AreaMetadata`** (`Runtime/CaptureMetadata.cs`) — Serializable POCOs written to JSON. JSON is built manually (not via `JsonUtility`) with controlled numeric precision (2 dp for position/size, 4 dp for quaternion).
+- **`CapturePlanner`** (`Runtime/CapturePlan.cs`) — **Pure C#, no UnityEngine.** The rules: rotation classification (`ClassifyRotation`, `FaceSupportsRotation`), which world axes a face shows (`FaceExtents`), the tile grid (`GridFor`), and `PlanFace` (LoD levels → `TileJob`s with offsets and pixel sizes). Also defines `CaptureFace`, `RotationAxis`, `TileJob`.
+- **`CaptureZone`** (`Runtime/CaptureZone.cs`) — `MonoBehaviour` + required `BoxCollider`. One free-form box: axis, cubemap flag, strict clipping, filename override, and LoD settings (`Lod Levels`, `First Level`, `Pixel Per Unit Override`). `WorldCenter` / `OrientedSize` (collider size × lossy scale — **not** the world AABB) / `RotationAbout` give the true oriented box. Gizmo drawn in `OnDrawGizmos`.
+- **`RuntimeAreaCapture`** (`Runtime/RuntimeAreaCapture.cs`) — Stateful renderer. Owns a hidden internal camera. `CaptureTile()` places the camera on the face along the zone's own axes, shifts it in the image plane to the tile centre, renders to a RenderTexture and reads back a `Texture2D`. `CaptureArea()` is a single-image convenience wrapper.
+- **`AreaCaptureExporter`** (`Editor/AreaCaptureExporter.cs`) — Static export pipeline. `BuildPlan` is separated from rendering so counts/warnings need no rendering (`CountImages` is the cheap variant for GUI repaints). Files: `{Name}_{Face}_L{level}_{col}x{row}.png`.
+- **`CaptureMetadata` & co.** (`Runtime/CaptureMetadata.cs`) — Pure C# schema v2 model (`BoxMetadata` → `FaceMetadata` → `LodMetadata` → `ImageMetadata`) and `CaptureMetadataJson`, a hand-written culture-invariant JSON writer (4 dp for position/size, 6 dp for the quaternion).
 - **`AreaCaptureWindow`** (`Editor/AreaCaptureWindow.cs`) — `EditorWindow` opened via `Window > Area Capture`. All settings persisted in `EditorPrefs`.
+
+The metadata contract is documented in the dashboard repo: `Dashboard/docs/Capture Metadata v2.md`. The Godot addon implements the same rules in GDScript.
+
+### Testing without Unity
+
+`CapturePlan.cs` and `CaptureMetadata.cs` compile without UnityEngine. Compile them into a plain .NET console app to test the planner and the JSON writer (the tile grid and JSON for the shared demo dataset in `Dashboard/oga-dashboard/tests/fixtures/capture-lod-demo/` must match the dashboard generator's output). There is still no in-repo test project.
 
 ### Camera setup (RuntimeAreaCapture)
 
-- Orthographic projection; size = half the perpendicular extent of the zone's `BoxCollider.size`
-- Camera is offset 10 units back from the volume along the capture axis
+- Orthographic projection framing exactly one tile: size = half the tile height, aspect = tile width / height.
+- The camera sits on the face's side of the box, 10 units back from the face along the zone's own axis, looking at it; then it is moved along the camera's right/up vectors to the tile centre.
+- Zone axes come from the transform, sizes from `OrientedSize`, so a zone rotated about one axis is captured aligned to itself.
 - **Normal clipping**: near = 0.3, far = 1000
 - **Strict clipping**: near = 10, far = 10 + depth of zone along capture axis (clips to exact volume bounds)
-- Resolution = `sizeInUnits * pixelPerUnit`, clamped to `SystemInfo.maxTextureSize`
+- Tile pixel size = round(tile world size × ppu of the level); tiles are planned so none exceeds `Max Tile Pixels` (≤ `SystemInfo.maxTextureSize`)
 
 ### CaptureAxis enum
 
-Six values (`XPos`, `XNeg`, `YPos`, `YNeg`, `ZPos`, `ZNeg`) map to camera look directions and determine which two dimensions of the BoxCollider drive the output image resolution.
+Six values (`PositiveX`, `NegativeX`, `PositiveY`, `NegativeY`, `PositiveZ`, `NegativeZ`) map to camera look directions (the camera sits on that side looking inward). `CaptureAxisExtensions.ToFace()` converts to the metadata face name: Front = -Z, Back = +Z, Left = -X, Right = +X, Top = +Y, Bottom = -Y.

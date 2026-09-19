@@ -15,6 +15,23 @@ namespace AreaCapture
         NegativeZ  // From -Z looking towards +Z
     }
 
+    public static class CaptureAxisExtensions
+    {
+        /// <summary>The face name used in the metadata: Front = -Z, Back = +Z, Left = -X, Right = +X, Top = +Y, Bottom = -Y.</summary>
+        public static CaptureFace ToFace(this CaptureAxis axis)
+        {
+            switch (axis)
+            {
+                case CaptureAxis.PositiveX: return CaptureFace.Right;
+                case CaptureAxis.NegativeX: return CaptureFace.Left;
+                case CaptureAxis.PositiveY: return CaptureFace.Top;
+                case CaptureAxis.NegativeY: return CaptureFace.Bottom;
+                case CaptureAxis.PositiveZ: return CaptureFace.Back;
+                default: return CaptureFace.Front;
+            }
+        }
+    }
+
     [RequireComponent(typeof(BoxCollider))]
     public class CaptureZone : MonoBehaviour
     {
@@ -51,15 +68,33 @@ namespace AreaCapture
 #if NAUGHTY_ATTRIBUTES
         [HideIf(nameof(exportCubemap))]
 #endif
-        [Tooltip("Custom filename for the exported PNG (without extension). If empty, defaults to 'CaptureZone_{GameObjectName}.png'.")]
+        [Tooltip("Name of this box in the exported metadata and the prefix of its PNG files ('{name}_{Face}_L{level}_{col}x{row}.png'). If empty, the GameObject name is used.")]
         [SerializeField]
         private string filenameOverride = "";
+
+        [Tooltip("How many levels of detail to export. Level i is rendered at Pixel Per Unit × 2^i and split into tiles as needed, so a viewer can load finer images the more it is zoomed in. 1 = a single resolution.")]
+        [Range(1, CapturePlanner.MaxLodLevels)]
+        [SerializeField]
+        private int lodLevels = 1;
+
+        [Tooltip("LoD level tag of this box's first level. Keep 0 for an overview box. A detail box placed inside a larger one gets a higher tag (and a higher Pixel Per Unit Override) so viewers draw it on top once zoomed in.")]
+        [Min(0)]
+        [SerializeField]
+        private int firstLevel = 0;
+
+        [Tooltip("Pixels per world unit of this box's first level. 0 uses the value from the Area Capture window.")]
+        [Min(0)]
+        [SerializeField]
+        private int pixelsPerUnitOverride = 0;
 
         public CaptureAxis Axis => captureAxis;
         public bool ExportCubemap => exportCubemap;
         public bool UseStrictClipping => useStrictClipping;
         public string FilenameOverride { get => filenameOverride; set => filenameOverride = value; }
         public bool ShowGizmo { get => showGizmo; set => showGizmo = value; }
+        public int LodLevels => Mathf.Clamp(lodLevels, 1, CapturePlanner.MaxLodLevels);
+        public int FirstLevel => Mathf.Max(0, firstLevel);
+        public int PixelsPerUnitOverride => Mathf.Max(0, pixelsPerUnitOverride);
 
         public Vector3 GetGlobalPosition()
         {
@@ -69,6 +104,58 @@ namespace AreaCapture
         public float GetGlobalRotation()
         {
             return transform.eulerAngles.z;
+        }
+
+        /// <summary>World-space centre of the box.</summary>
+        public Vector3 WorldCenter
+        {
+            get
+            {
+                BoxCollider col = GetComponent<BoxCollider>();
+                return col != null ? transform.TransformPoint(col.center) : transform.position;
+            }
+        }
+
+        /// <summary>Size of the box along its own axes in world units (collider size × scale). Not the world AABB.</summary>
+        public Vector3 OrientedSize
+        {
+            get
+            {
+                BoxCollider col = GetComponent<BoxCollider>();
+                if (col == null) return Vector3.zero;
+                Vector3 s = transform.lossyScale;
+                return new Vector3(col.size.x * Mathf.Abs(s.x), col.size.y * Mathf.Abs(s.y), col.size.z * Mathf.Abs(s.z));
+            }
+        }
+
+        /// <summary>Which single world axis the box is rotated about (None, or Unsupported for a tilted box).</summary>
+        public RotationAxis RotationAbout
+        {
+            get
+            {
+                Quaternion q = transform.rotation;
+                return CapturePlanner.ClassifyRotation(q.x, q.y, q.z, q.w);
+            }
+        }
+
+        /// <summary>The faces this zone exports: all six for a cubemap zone, otherwise the chosen one.</summary>
+        public System.Collections.Generic.IEnumerable<CaptureFace> FacesToExport()
+        {
+            if (exportCubemap)
+            {
+                // Enum order (Front, Back, Left, Right, Top, Bottom) is the export order
+                foreach (CaptureFace face in System.Enum.GetValues(typeof(CaptureFace))) yield return face;
+            }
+            else
+            {
+                yield return captureAxis.ToFace();
+            }
+        }
+
+        private string LodLabel()
+        {
+            int last = FirstLevel + LodLevels - 1;
+            return last == FirstLevel ? $"{name}  L{FirstLevel}" : $"{name}  L{FirstLevel}–L{last}";
         }
 
         private void OnDrawGizmos()
@@ -121,6 +208,10 @@ namespace AreaCapture
             }
 
             Gizmos.matrix = oldMatrix;
+
+#if UNITY_EDITOR
+            UnityEditor.Handles.Label(WorldCenter, LodLabel());
+#endif
         }
 
         private void DrawCapturedFace(Vector3 center, Vector3 size, CaptureAxis axis)

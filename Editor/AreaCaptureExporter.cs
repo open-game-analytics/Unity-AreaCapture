@@ -1,7 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using AreaCapture.Runtime;
 
 using UnityEditor;
@@ -9,7 +8,7 @@ using UnityEditor;
 namespace AreaCapture.Editor
 {
     /// <summary>
-    /// Exports captured areas to PNG images and JSON metadata
+    /// Exports captured areas to PNG images and JSON metadata (schema v2: box → face → LoD level → tiles)
     /// </summary>
     public class AreaCaptureExporter
     {
@@ -19,6 +18,7 @@ namespace AreaCapture.Editor
         internal const string PREF_KEY_CLEARFLAG  = "AreaCapture_ClearFlag";
         internal const string PREF_KEY_BGCOLOR    = "AreaCapture_BGColor";
         internal const string PREF_KEY_CULLMASK   = "AreaCapture_CullMask";
+        internal const string PREF_KEY_MAXTILE    = "AreaCapture_MaxTile";
         public static ExportSettings LoadSettingsFromPrefs()
         {
             var s = new ExportSettings
@@ -28,6 +28,7 @@ namespace AreaCapture.Editor
                 MetadataFilename = EditorPrefs.GetString(PREF_KEY_META, "capture_metadata.json"),
                 ClearFlags       = (CameraClearFlags)EditorPrefs.GetInt(PREF_KEY_CLEARFLAG, (int)CameraClearFlags.SolidColor),
                 CullingMask      = EditorPrefs.GetInt(PREF_KEY_CULLMASK, -1),
+                MaxTilePixels    = EditorPrefs.GetInt(PREF_KEY_MAXTILE, CapturePlanner.DefaultMaxTilePixels),
             };
             string html = EditorPrefs.GetString(PREF_KEY_BGCOLOR, "#00000000");
             if (ColorUtility.TryParseHtmlString(html, out Color c)) s.BackgroundColor = c;
@@ -39,11 +40,32 @@ namespace AreaCapture.Editor
             public int PixelPerUnit;
             public string OutputDirectory;
             public string MetadataFilename;
-            
+
+            /// <summary>Largest PNG edge in pixels. Bigger areas are split into tiles instead of failing.</summary>
+            public int MaxTilePixels = CapturePlanner.DefaultMaxTilePixels;
+
             // Rendering options
             public CameraClearFlags ClearFlags = CameraClearFlags.SolidColor;
             public Color BackgroundColor = new Color(0, 0, 0, 0); // Transparent black by default
             public int CullingMask = -1; // Everything
+        }
+
+        /// <summary>One PNG to render and where to write it.</summary>
+        internal class ExportJob
+        {
+            public CaptureZone Zone;
+            public TileJob Tile;
+            public string Filename;
+        }
+
+        /// <summary>Everything an export will do, worked out before anything is rendered.</summary>
+        public class ExportPlan
+        {
+            internal readonly List<ExportJob> Jobs = new List<ExportJob>();
+            public readonly CaptureMetadata Metadata = new CaptureMetadata();
+            public readonly List<string> Warnings = new List<string>();
+
+            public int ImageCount => Jobs.Count;
         }
 
         /// <summary>
@@ -59,12 +81,120 @@ namespace AreaCapture.Editor
 
             if (zones.Length == 0)
             {
-                Debug.LogWarning("No CaptureZone2D components found in the scene!");
+                Debug.LogWarning("No CaptureZone components found in the scene!");
                 onComplete?.Invoke(false);
                 return;
             }
 
             ExportZones(zones, settings, onComplete);
+        }
+
+        /// <summary>Largest tile edge actually used: the setting, limited by what the GPU can render.</summary>
+        public static int EffectiveMaxTilePixels(ExportSettings settings)
+        {
+            int requested = settings.MaxTilePixels <= 0 ? CapturePlanner.DefaultMaxTilePixels : settings.MaxTilePixels;
+            return Mathf.Clamp(requested, 64, SystemInfo.maxTextureSize);
+        }
+
+        /// <summary>
+        /// How many PNGs a zone would export. Mirrors <see cref="BuildPlan"/> but builds nothing, so it is safe to
+        /// call from GUI repaints.
+        /// </summary>
+        public static int CountImages(CaptureZone zone, ExportSettings settings)
+        {
+            Vector3 size = zone.OrientedSize;
+            RotationAxis rotation = zone.RotationAbout;
+            if (size.x <= 0f || size.y <= 0f || size.z <= 0f || rotation == RotationAxis.Unsupported) return 0;
+
+            float basePpu = zone.PixelsPerUnitOverride > 0 ? zone.PixelsPerUnitOverride : settings.PixelPerUnit;
+            int maxTile = EffectiveMaxTilePixels(settings);
+
+            int total = 0;
+            foreach (CaptureFace face in zone.FacesToExport())
+            {
+                if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
+                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, basePpu, zone.LodLevels, maxTile);
+            }
+            return total;
+        }
+
+        /// <summary>
+        /// Works out every image an export would produce, plus the metadata describing them. Renders nothing,
+        /// so the editor UI can use it for counts. Problems are reported in <see cref="ExportPlan.Warnings"/>.
+        /// </summary>
+        public static ExportPlan BuildPlan(CaptureZone[] zones, ExportSettings settings)
+        {
+            var plan = new ExportPlan();
+            int maxTile = EffectiveMaxTilePixels(settings);
+            var usedIds = new HashSet<string>();
+
+            for (int z = 0; z < zones.Length; z++)
+            {
+                CaptureZone zone = zones[z];
+                if (zone == null) continue;
+
+                string id = UniqueId(GetZoneName(zone, z), usedIds);
+                Vector3 size = zone.OrientedSize;
+
+                if (size.x <= 0f || size.y <= 0f || size.z <= 0f)
+                {
+                    plan.Warnings.Add($"'{zone.name}' has no volume (check its BoxCollider size and scale) and was skipped.");
+                    continue;
+                }
+
+                RotationAxis rotation = zone.RotationAbout;
+                if (rotation == RotationAxis.Unsupported)
+                {
+                    plan.Warnings.Add($"'{zone.name}' is rotated about more than one axis and was skipped. Only rotation about a single axis (X, Y or Z) can be exported.");
+                    continue;
+                }
+
+                float basePpu = zone.PixelsPerUnitOverride > 0 ? zone.PixelsPerUnitOverride : settings.PixelPerUnit;
+                Vector3 center = zone.WorldCenter;
+                Quaternion q = zone.transform.rotation;
+
+                var box = new BoxMetadata
+                {
+                    Id = id,
+                    Position = new MetaVec3(center.x, center.y, center.z),
+                    Rotation = new MetaQuat(q.x, q.y, q.z, q.w),
+                    Size = new MetaVec3(size.x, size.y, size.z),
+                };
+
+                var skippedFaces = new List<CaptureFace>();
+                foreach (CaptureFace face in zone.FacesToExport())
+                {
+                    if (!CapturePlanner.FaceSupportsRotation(face, rotation))
+                    {
+                        skippedFaces.Add(face);
+                        continue;
+                    }
+
+                    FaceMetadata faceMeta = box.GetOrAddFace(face);
+                    LodMetadata lod = null;
+                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, basePpu, zone.LodLevels, zone.FirstLevel, maxTile))
+                    {
+                        if (lod == null || lod.Level != tile.Level)
+                        {
+                            lod = new LodMetadata { Level = tile.Level, PixelsPerUnit = tile.PixelsPerUnit, Cols = tile.Cols, Rows = tile.Rows };
+                            faceMeta.Lods.Add(lod);
+                        }
+
+                        string filename = $"{id}_{face}_L{tile.Level}_{tile.Col}x{tile.Row}.png";
+                        lod.Images.Add(new ImageMetadata { Col = tile.Col, Row = tile.Row, Filename = filename, PixelWidth = tile.PixelWidth, PixelHeight = tile.PixelHeight });
+                        plan.Jobs.Add(new ExportJob { Zone = zone, Tile = tile, Filename = filename });
+                    }
+                }
+
+                if (skippedFaces.Count > 0)
+                {
+                    plan.Warnings.Add($"'{zone.name}' is rotated about {rotation}, so only the faces looking along that axis can be exported. Skipped: {string.Join(", ", skippedFaces)}.");
+                }
+
+                if (box.Faces.Count > 0) plan.Metadata.Boxes.Add(box);
+            }
+
+            return plan;
         }
 
         /// <summary>
@@ -77,9 +207,19 @@ namespace AreaCapture.Editor
                 onComplete?.Invoke(false);
                 return;
             }
-            
+
             if (settings == null)
                 settings = new ExportSettings();
+
+            ExportPlan plan = BuildPlan(zones, settings);
+            foreach (string warning in plan.Warnings) Debug.LogWarning(warning);
+
+            if (plan.Jobs.Count == 0)
+            {
+                Debug.LogWarning("Nothing to export: none of the selected zones can produce an image.");
+                onComplete?.Invoke(false);
+                return;
+            }
 
             // Create output directory
             if (!Directory.Exists(settings.OutputDirectory))
@@ -87,29 +227,11 @@ namespace AreaCapture.Editor
                 Directory.CreateDirectory(settings.OutputDirectory);
             }
 
-            // Capture all zones using a state machine attached to EditorApplication.update
+            // Render the planned tiles one per editor frame with a state machine on EditorApplication.update
             var capturer = new RuntimeAreaCapture();
-            var metadata = new CaptureMetadata();
-            
             int currentIndex = 0;
-            int faceIndex = 0; // 0-5 for cubemap faces
-            int currentImageCount = 0;
-            int totalImages = 0;
-            foreach (var z in zones) totalImages += z.ExportCubemap ? 6 : 1;
-
+            int total = plan.Jobs.Count;
             bool isInitializing = true;
-
-            CaptureAxis[] cubemapAxes = new CaptureAxis[]
-            {
-                CaptureAxis.NegativeZ, // Front
-                CaptureAxis.PositiveZ, // Back
-                CaptureAxis.NegativeX, // Left
-                CaptureAxis.PositiveX, // Right
-                CaptureAxis.PositiveY, // Top
-                CaptureAxis.NegativeY  // Bottom
-            };
-
-            string[] cubemapSuffixes = new string[] { "_Front", "_Back", "_Left", "_Right", "_Top", "_Bottom" };
 
             EditorApplication.CallbackFunction updateAction = null;
             updateAction = () =>
@@ -121,50 +243,45 @@ namespace AreaCapture.Editor
                     return;
                 }
 
-                if (currentIndex >= zones.Length)
+                if (currentIndex >= total)
                 {
                     // Finished
                     EditorUtility.ClearProgressBar();
                     EditorApplication.update -= updateAction;
+                    capturer.Cleanup();
 
                     // Save metadata JSON
                     string jsonPath = Path.Combine(settings.OutputDirectory, settings.MetadataFilename);
-                    SaveMetadataAsJson(metadata, jsonPath);
+                    File.WriteAllText(jsonPath, CaptureMetadataJson.Serialize(plan.Metadata));
 
-                    Debug.Log($"Export complete! Saved to: {settings.OutputDirectory}");
+                    Debug.Log($"Export complete! {total} image(s) saved to: {settings.OutputDirectory}");
                     onComplete?.Invoke(true);
                     return;
                 }
 
-                var zone = zones[currentIndex];
-                float totalProgress = (float)currentImageCount / totalImages;
-                
-                string processingName = GetZoneName(zone, currentIndex);
-                
-                CaptureAxis currentAxis = zone.ExportCubemap ? cubemapAxes[faceIndex] : zone.Axis;
-                string suffix = zone.ExportCubemap ? cubemapSuffixes[faceIndex] : "_Top";
+                ExportJob job = plan.Jobs[currentIndex];
 
                 bool canceled = EditorUtility.DisplayCancelableProgressBar(
-                    "Exporting Area Captures", 
-                    $"Capturing {processingName}{suffix} ({currentIndex + 1}/{zones.Length})...", 
-                    totalProgress);
+                    "Exporting Area Captures",
+                    $"Capturing {job.Filename} ({currentIndex + 1}/{total})...",
+                    (float)currentIndex / total);
 
                 if (canceled)
                 {
                     EditorUtility.ClearProgressBar();
                     EditorApplication.update -= updateAction;
+                    capturer.Cleanup();
                     Debug.LogWarning("Capture export canceled by user.");
                     onComplete?.Invoke(false);
                     return;
                 }
 
-                var texture = capturer.CaptureArea(
-                    zone, 
-                    settings.PixelPerUnit, 
-                    settings.ClearFlags, 
-                    settings.BackgroundColor, 
-                    settings.CullingMask,
-                    currentAxis
+                Texture2D texture = capturer.CaptureTile(
+                    job.Zone,
+                    job.Tile,
+                    settings.ClearFlags,
+                    settings.BackgroundColor,
+                    settings.CullingMask
                 );
 
                 if (texture == null)
@@ -173,62 +290,16 @@ namespace AreaCapture.Editor
                     EditorUtility.ClearProgressBar();
                     EditorApplication.update -= updateAction;
                     capturer.Cleanup();
-                    Debug.LogWarning($"Capture export aborted at '{processingName}' due to a rendering failure.");
+                    Debug.LogWarning($"Capture export aborted at '{job.Filename}' due to a rendering failure.");
                     onComplete?.Invoke(false);
                     return;
                 }
 
-                // Generate filename
-                string fileName;
-                if (!string.IsNullOrEmpty(zone.FilenameOverride) && !zone.ExportCubemap)
-                {
-                    fileName = Path.Combine(settings.OutputDirectory, zone.FilenameOverride);
-                    if (!fileName.ToLower().EndsWith(".png")) fileName += ".png";
-                }
-                else
-                {
-                    string baseFileName = GetZoneFileName(zone, currentIndex, settings.OutputDirectory);
-                    fileName = baseFileName.Replace(".png", suffix + ".png");
-                }
-
-                // Save PNG
-                byte[] pngData = texture.EncodeToPNG();
-                File.WriteAllBytes(fileName, pngData);
-
-                // Record metadata
-                BoxCollider col = zone.GetComponent<BoxCollider>();
-                Vector3 globalPos = col != null ? col.bounds.center : zone.GetGlobalPosition();
-                Quaternion globalQuat = zone.transform.rotation;
-                Vector3 size = col != null ? col.bounds.size : Vector3.zero;
-
-                string faceName = zone.ExportCubemap ? cubemapSuffixes[faceIndex].TrimStart('_') : "Top";
-                metadata.AddArea(processingName + suffix, Path.GetFileName(fileName), globalPos, globalQuat, size, faceName);
-
-                Debug.Log($"Captured and saved: {fileName}");
-
+                string path = Path.Combine(settings.OutputDirectory, job.Filename);
+                File.WriteAllBytes(path, texture.EncodeToPNG());
                 Object.DestroyImmediate(texture);
 
-                currentImageCount++;
-
-                if (zone.ExportCubemap)
-                {
-                    faceIndex++;
-                    if (faceIndex >= 6)
-                    {
-                        faceIndex = 0;
-                        currentIndex++;
-                    }
-                }
-                else
-                {
-                    currentIndex++;
-                }
-
-                if (currentIndex >= zones.Length)
-                {
-                    // Clean up capturer resources
-                    capturer.Cleanup();
-                }
+                currentIndex++;
             };
 
             // Initial Progress Bar setup
@@ -238,55 +309,46 @@ namespace AreaCapture.Editor
             EditorApplication.update += updateAction;
         }
 
-        private static string GetZoneFileName(CaptureZone zone, int index, string outputDir)
+        /// <summary>
+        /// A short explanation of what a zone's rotation means for the export, or null when it is not rotated.
+        /// </summary>
+        public static string GetRotationNote(CaptureZone zone, out MessageType type)
         {
-            string zoneName = GetZoneName(zone, index);
-            string fileName = $"CaptureZone_{zoneName}.png";
-            return Path.Combine(outputDir, fileName);
+            RotationAxis rotation = zone.RotationAbout;
+            switch (rotation)
+            {
+                case RotationAxis.None:
+                    type = MessageType.None;
+                    return null;
+                case RotationAxis.Unsupported:
+                    type = MessageType.Warning;
+                    return "Rotated about more than one axis. Only rotation about a single axis (X, Y or Z) can be exported, so this zone will be skipped.";
+                default:
+                    type = MessageType.Info;
+                    string faces = rotation == RotationAxis.X ? "Left / Right" : rotation == RotationAxis.Y ? "Top / Bottom" : "Front / Back";
+                    return $"Rotated about {rotation}. The rotation is exported; only the faces looking along that axis ({faces}) are captured.";
+            }
+        }
+
+        /// <summary>The GameObject name (or the filename override) made safe for file names and unique via <paramref name="used"/>.</summary>
+        private static string UniqueId(string name, HashSet<string> used)
+        {
+            string id = name;
+            for (int n = 2; !used.Add(id); n++) id = $"{name}_{n}";
+            return id;
         }
 
         private static string GetZoneName(CaptureZone zone, int index)
         {
-            string rawName = string.IsNullOrEmpty(zone.name) ? $"Zone{index}" : zone.name;
-            
+            string raw = !string.IsNullOrEmpty(zone.FilenameOverride) ? zone.FilenameOverride : zone.name;
+            if (raw.ToLowerInvariant().EndsWith(".png")) raw = raw.Substring(0, raw.Length - 4);
+            if (string.IsNullOrEmpty(raw)) raw = $"Zone{index}";
+
             // Remove invalid file path characters and spaces
             var invalidChars = Path.GetInvalidFileNameChars();
-            string cleanName = string.Join("_", rawName.Split(invalidChars, System.StringSplitOptions.RemoveEmptyEntries)).Replace(" ", "");
-            
-            return cleanName;
-        }
+            string cleanName = string.Join("_", raw.Split(invalidChars, System.StringSplitOptions.RemoveEmptyEntries)).Replace(" ", "");
 
-        private static void SaveMetadataAsJson(CaptureMetadata metadata, string filePath)
-        {
-            // Manual JSON construction for proper formatting with numeric values
-            var lines = new List<string> { "{" };
-            var items = metadata.areas.ToList();
-            
-            for (int i = 0; i < items.Count; i++)
-            {
-                var item = items[i];
-                var area = item.Value;
-                
-                lines.Add($"\t\"{item.Key}\": {{");
-                lines.Add($"\t\t\"filename\": \"{area.filename}\",");
-                lines.Add($"\t\t\"cubemap_face\": \"{area.cubemapFace}\",");
-                lines.Add($"\t\t\"global_position\": {{ \"x\": {area.globalPosition.x:F2}, \"y\": {area.globalPosition.y:F2}, \"z\": {area.globalPosition.z:F2} }},");
-                lines.Add($"\t\t\"global_quaternion\": {{ \"x\": {area.globalQuaternion.x:F4}, \"y\": {area.globalQuaternion.y:F4}, \"z\": {area.globalQuaternion.z:F4}, \"w\": {area.globalQuaternion.w:F4} }},");
-                lines.Add($"\t\t\"size\": {{ \"x\": {area.size.x:F2}, \"y\": {area.size.y:F2}, \"z\": {area.size.z:F2} }}");
-                lines.Add(i < items.Count - 1 ? "\t}," : "\t}");
-            }
-            
-            lines.Add("}");
-            string formattedJson = string.Join("\n", lines);
-
-            File.WriteAllText(filePath, formattedJson);
-        }
-
-        // Helper class for JSON serialization
-        [System.Serializable]
-        private class JsonWrapper
-        {
-            public Dictionary<string, object> data;
+            return string.IsNullOrEmpty(cleanName) ? $"Zone{index}" : cleanName;
         }
     }
 }

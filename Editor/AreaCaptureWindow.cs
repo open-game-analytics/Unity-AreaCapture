@@ -33,6 +33,7 @@ namespace AreaCapture.Editor
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_CLEARFLAG, (int)settings.ClearFlags);
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_CULLMASK, settings.CullingMask);
                 EditorPrefs.SetString(AreaCaptureExporter.PREF_KEY_BGCOLOR, "#" + ColorUtility.ToHtmlStringRGBA(settings.BackgroundColor));
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_MAXTILE, settings.MaxTilePixels);
             }
         }
 
@@ -46,7 +47,9 @@ namespace AreaCapture.Editor
             EditorGUILayout.Space();
 
             GUILayout.Label("Capture Settings", EditorStyles.boldLabel);
-            settings.PixelPerUnit = EditorGUILayout.IntField(new GUIContent("Pixel Per Unit", "Number of pixels per world unit. A 1-unit zone at 100 PPU produces a 100×100 px image. Higher values = sharper output and larger files."), settings.PixelPerUnit);
+            settings.PixelPerUnit = EditorGUILayout.IntField(new GUIContent("Pixel Per Unit", "Number of pixels per world unit for a zone's first LoD level (a zone can override it). A 1-unit zone at 100 PPU produces a 100×100 px image. Higher values = sharper output and larger files."), settings.PixelPerUnit);
+            settings.MaxTilePixels = EditorGUILayout.IntField(new GUIContent("Max Tile Pixels", $"Largest edge of any exported PNG. Bigger areas are split into a grid of tiles instead of failing. Limited to the GPU texture size ({SystemInfo.maxTextureSize})."), settings.MaxTilePixels);
+            settings.MaxTilePixels = Mathf.Clamp(settings.MaxTilePixels, 64, SystemInfo.maxTextureSize);
 
             EditorGUILayout.Space();
 
@@ -132,8 +135,15 @@ namespace AreaCapture.Editor
                     if (zone.UseStrictClipping) info += " | [Clipped]";
                     if (!string.IsNullOrEmpty(zone.FilenameOverride)) info += $" | Name: {zone.FilenameOverride}";
                     EditorGUILayout.LabelField(info, EditorStyles.miniLabel);
-                    if (Quaternion.Angle(zone.transform.rotation, Quaternion.identity) > 0.01f)
-                        EditorGUILayout.HelpBox("Rotated — unsupported", MessageType.Warning);
+
+                    int lastLevel = zone.FirstLevel + zone.LodLevels - 1;
+                    string levels = lastLevel == zone.FirstLevel ? $"LoD L{zone.FirstLevel}" : $"LoD L{zone.FirstLevel}–L{lastLevel}";
+                    int imageCount = AreaCaptureExporter.CountImages(zone, settings);
+                    EditorGUILayout.LabelField($"{levels} | {imageCount} image(s)", EditorStyles.miniLabel);
+
+                    string rotationNote = AreaCaptureExporter.GetRotationNote(zone, out MessageType rotationType);
+                    if (rotationNote != null)
+                        EditorGUILayout.HelpBox(rotationNote, rotationType);
                     EditorGUILayout.EndVertical();
 
                     if (GUILayout.Button("Show", GUILayout.Width(60)))
@@ -166,9 +176,11 @@ namespace AreaCapture.Editor
             GUILayout.Label("Instructions", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
                 "1. Add CaptureZone component to GameObjects you want to capture\n" +
-                "2. Configure the capture size, position, and axis\n" +
-                "3. Use the list above to select specific zones if needed\n" +
-                "4. Click 'Export' to render and save files",
+                "2. Place, scale and rotate the box freely (rotation about one axis is supported)\n" +
+                "3. Set 'Lod Levels' to also export finer resolutions, split into tiles\n" +
+                "4. For a detail area inside a bigger zone: give it a higher 'First Level' and Pixel Per Unit Override\n" +
+                "5. Use the list above to select specific zones if needed\n" +
+                "6. Click 'Export' to render and save files",
                 MessageType.Info);
         }
 

@@ -14,12 +14,15 @@ namespace AreaCapture.Editor
 
             EditorGUILayout.Space();
 
-            if (Quaternion.Angle(zone.transform.rotation, Quaternion.identity) > 0.01f)
-            {
-                EditorGUILayout.HelpBox(
-                    "This CaptureZone is rotated. Rotation is not supported — the captured image will not align correctly in the viewer app.",
-                    MessageType.Warning);
-            }
+            string rotationNote = AreaCaptureExporter.GetRotationNote(zone, out MessageType rotationType);
+            if (rotationNote != null)
+                EditorGUILayout.HelpBox(rotationNote, rotationType);
+
+            var settings = AreaCaptureExporter.LoadSettingsFromPrefs();
+            int imageCount = AreaCaptureExporter.CountImages(zone, settings);
+            EditorGUILayout.HelpBox(
+                $"Export with the saved settings produces {imageCount} image(s) (max tile {AreaCaptureExporter.EffectiveMaxTilePixels(settings)} px).",
+                MessageType.None);
 
             EditorGUILayout.Space(4);
 
@@ -28,7 +31,6 @@ namespace AreaCapture.Editor
                 "Exports this zone using the settings last saved in the Area Capture window."),
                 GUILayout.Height(30)))
             {
-                var settings = AreaCaptureExporter.LoadSettingsFromPrefs();
                 AreaCaptureExporter.ExportZones(new[] { zone }, settings, success =>
                 {
                     if (success)

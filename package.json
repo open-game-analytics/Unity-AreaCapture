@@ -1,8 +1,8 @@
 {
     "name": "com.komatrich.area-capture",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "displayName": "Area Capture",
-    "description": "A tool for capturing images and cubemaps of specific areas in a Unity scene with JSON metadata.",
+    "description": "A tool for capturing images and cubemaps of specific areas in a Unity scene, at several levels of detail, with JSON metadata.",
     "unity": "2021.3",
     "author": {
         "name": "komatrich"
@@ -11,7 +11,8 @@
         "capture",
         "screenshot",
         "metadata",
-        "cubemap"
+        "cubemap",
+        "lod"
     ],
     "dependencies": {
         "com.dbrizov.naughtyattributes": "https://github.com/dbrizov/NaughtyAttributes.git#upm"
