@@ -37,7 +37,9 @@ Go to **Window > Area Capture** in the Unity Editor menu.
 
 ### Step 3: Configure Export Settings
 
-- **Pixel Per Unit**: Resolution density of the exported images.
+- **Pixel Per Unit**: Maximum quality — resolution density of the finest exported image.
+- **Lod Levels** (default 4): How many resolutions to export. The finest is Pixel Per Unit; every further level is half the resolution of the previous one.
+- **Min Level Pixels** (default 256): Degraded levels whose whole image would be smaller than this are skipped.
 - **Output Directory**: Where to save the exported files.
 - **Metadata Filename**: Name of the JSON metadata file.
 
@@ -85,9 +87,11 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 
 ## Levels of detail
 
-Set **Lod Levels** on a zone to export it at several resolutions: level *i* is rendered at `Pixel Per Unit × 2^i` and split into as many tiles as needed. A viewer (the OGA dashboard) picks the level that matches its zoom.
+**Pixel Per Unit** is the maximum quality. **Lod Levels** (a setting of the Area Capture window, applied to every zone) adds smaller versions below it: the finest level renders at `Pixel Per Unit`, and each further level at half the resolution of the one before. With 4 levels at 100 ppu that is 12.5 / 25 / 50 / 100 ppu. Levels are tagged from `L0` (coarsest) up to the finest, and each is split into as many tiles as needed. A viewer (the OGA dashboard) picks the level that matches its zoom.
 
-For a hand-placed detail area inside a bigger zone, add a second `CaptureZone` with a higher **First Level** and a higher **Pixel Per Unit Override**. Zones can overlap and be placed, sized and rotated freely.
+**Min Level Pixels** prevents tiny textures: a degraded level is skipped when the longest edge of its whole image would be below this size, so a small zone gets fewer levels than a large one. The finest level is always exported.
+
+A zone can set its own **Pixel Per Unit Override** (its max quality) — e.g. for a hand-placed detail area inside a bigger zone. Zones can overlap and be placed, sized and rotated freely. Note: level tags are per box (every box starts at `L0`).
 
 **Rotation:** a zone may be rotated about **one** world axis. Only the faces looking along that axis are exported (rotation about Y → `Top`/`Bottom`, Z → `Front`/`Back`, X → `Left`/`Right`); a zone tilted about several axes is skipped with a warning.
 
@@ -111,12 +115,12 @@ Marks a volume for capture.
 - `Export Cubemap`: Toggle to export all six faces instead of one.
 - `Filename Override`: Optional custom name (box id and file prefix).
 - `Use Strict Clipping`: If enabled, only objects inside the volume are rendered.
-- `Lod Levels` / `First Level` / `Pixel Per Unit Override`: level-of-detail settings (see above).
-- `Show Gizmo`: Display the capture volume in the scene view (labelled with its LoD levels).
+- `Pixel Per Unit Override`: Max-quality resolution for this zone (0 = use the window's Pixel Per Unit). The number of LoD levels is a window setting (see above).
+- `Show Gizmo`: Display the capture volume in the scene view (labelled with its name).
 
 ## Tips
 
-- **Better Quality**: Increase "Pixel Per Unit" or "Lod Levels".
+- **Better Quality**: Increase "Pixel Per Unit" (the maximum). "Lod Levels" only adds smaller versions below it.
 - **Large Areas**: No need to lower the resolution — areas larger than "Max Tile Pixels" are tiled automatically.
 - **Filenames**: Use the "Filename Override" in the CaptureZone inspector for specific naming requirements.
 - **Selective Export**: Use the checkboxes in the Area Capture window to only re-export changed areas.

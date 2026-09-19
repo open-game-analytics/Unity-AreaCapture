@@ -72,17 +72,7 @@ namespace AreaCapture
         [SerializeField]
         private string filenameOverride = "";
 
-        [Tooltip("How many levels of detail to export. Level i is rendered at Pixel Per Unit × 2^i and split into tiles as needed, so a viewer can load finer images the more it is zoomed in. 1 = a single resolution.")]
-        [Range(1, CapturePlanner.MaxLodLevels)]
-        [SerializeField]
-        private int lodLevels = 1;
-
-        [Tooltip("LoD level tag of this box's first level. Keep 0 for an overview box. A detail box placed inside a larger one gets a higher tag (and a higher Pixel Per Unit Override) so viewers draw it on top once zoomed in.")]
-        [Min(0)]
-        [SerializeField]
-        private int firstLevel = 0;
-
-        [Tooltip("Pixels per world unit of this box's first level. 0 uses the value from the Area Capture window.")]
+        [Tooltip("Pixels per world unit of this box's finest (max quality) level; the Area Capture window's LoD levels are halved down from it. 0 uses the value from the Area Capture window.")]
         [Min(0)]
         [SerializeField]
         private int pixelsPerUnitOverride = 0;
@@ -92,8 +82,6 @@ namespace AreaCapture
         public bool UseStrictClipping => useStrictClipping;
         public string FilenameOverride { get => filenameOverride; set => filenameOverride = value; }
         public bool ShowGizmo { get => showGizmo; set => showGizmo = value; }
-        public int LodLevels => Mathf.Clamp(lodLevels, 1, CapturePlanner.MaxLodLevels);
-        public int FirstLevel => Mathf.Max(0, firstLevel);
         public int PixelsPerUnitOverride => Mathf.Max(0, pixelsPerUnitOverride);
 
         public Vector3 GetGlobalPosition()
@@ -152,12 +140,6 @@ namespace AreaCapture
             }
         }
 
-        private string LodLabel()
-        {
-            int last = FirstLevel + LodLevels - 1;
-            return last == FirstLevel ? $"{name}  L{FirstLevel}" : $"{name}  L{FirstLevel}–L{last}";
-        }
-
         private void OnDrawGizmos()
         {
             DrawGizmo(false);
@@ -210,7 +192,7 @@ namespace AreaCapture
             Gizmos.matrix = oldMatrix;
 
 #if UNITY_EDITOR
-            UnityEditor.Handles.Label(WorldCenter, LodLabel());
+            UnityEditor.Handles.Label(WorldCenter, name);
 #endif
         }
 

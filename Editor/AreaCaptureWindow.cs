@@ -34,6 +34,8 @@ namespace AreaCapture.Editor
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_CULLMASK, settings.CullingMask);
                 EditorPrefs.SetString(AreaCaptureExporter.PREF_KEY_BGCOLOR, "#" + ColorUtility.ToHtmlStringRGBA(settings.BackgroundColor));
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_MAXTILE, settings.MaxTilePixels);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_LODLEVELS, settings.LodLevels);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_MINLEVEL, settings.MinLevelPixels);
             }
         }
 
@@ -47,7 +49,9 @@ namespace AreaCapture.Editor
             EditorGUILayout.Space();
 
             GUILayout.Label("Capture Settings", EditorStyles.boldLabel);
-            settings.PixelPerUnit = EditorGUILayout.IntField(new GUIContent("Pixel Per Unit", "Number of pixels per world unit for a zone's first LoD level (a zone can override it). A 1-unit zone at 100 PPU produces a 100×100 px image. Higher values = sharper output and larger files."), settings.PixelPerUnit);
+            settings.PixelPerUnit = EditorGUILayout.IntField(new GUIContent("Pixel Per Unit", "Maximum quality: pixels per world unit of the finest LoD level (a zone can override it). A 1-unit zone at 100 PPU produces a 100×100 px image. Higher values = sharper output and larger files."), settings.PixelPerUnit);
+            settings.LodLevels = EditorGUILayout.IntSlider(new GUIContent("Lod Levels", "How many resolutions to export per face. The finest is Pixel Per Unit; each further level is half the resolution of the one before, so a viewer can load smaller images while zoomed out. 1 = only the maximum quality."), settings.LodLevels, 1, CapturePlanner.MaxLodLevels);
+            settings.MinLevelPixels = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Min Level Pixels", "Degraded levels whose whole image would be smaller than this (longest edge, in pixels) are not exported, so no tiny textures. The maximum quality level is always exported. 0 = no limit."), settings.MinLevelPixels));
             settings.MaxTilePixels = EditorGUILayout.IntField(new GUIContent("Max Tile Pixels", $"Largest edge of any exported PNG. Bigger areas are split into a grid of tiles instead of failing. Limited to the GPU texture size ({SystemInfo.maxTextureSize})."), settings.MaxTilePixels);
             settings.MaxTilePixels = Mathf.Clamp(settings.MaxTilePixels, 64, SystemInfo.maxTextureSize);
 
@@ -136,9 +140,11 @@ namespace AreaCapture.Editor
                     if (!string.IsNullOrEmpty(zone.FilenameOverride)) info += $" | Name: {zone.FilenameOverride}";
                     EditorGUILayout.LabelField(info, EditorStyles.miniLabel);
 
-                    int lastLevel = zone.FirstLevel + zone.LodLevels - 1;
-                    string levels = lastLevel == zone.FirstLevel ? $"LoD L{zone.FirstLevel}" : $"LoD L{zone.FirstLevel}–L{lastLevel}";
+                    List<double> ladder = AreaCaptureExporter.LevelLadder(zone, settings);
                     int imageCount = AreaCaptureExporter.CountImages(zone, settings);
+                    string levels = ladder.Count == 0 ? "no LoD" : ladder.Count == 1
+                        ? $"L0 {ladder[0]:0.##} ppu"
+                        : $"L0–L{ladder.Count - 1} {ladder[0]:0.##}–{ladder[ladder.Count - 1]:0.##} ppu";
                     EditorGUILayout.LabelField($"{levels} | {imageCount} image(s)", EditorStyles.miniLabel);
 
                     string rotationNote = AreaCaptureExporter.GetRotationNote(zone, out MessageType rotationType);
@@ -177,8 +183,8 @@ namespace AreaCapture.Editor
             EditorGUILayout.HelpBox(
                 "1. Add CaptureZone component to GameObjects you want to capture\n" +
                 "2. Place, scale and rotate the box freely (rotation about one axis is supported)\n" +
-                "3. Set 'Lod Levels' to also export finer resolutions, split into tiles\n" +
-                "4. For a detail area inside a bigger zone: give it a higher 'First Level' and Pixel Per Unit Override\n" +
+                "3. Set 'Pixel Per Unit' to the best quality you want; 'Lod Levels' adds smaller, halved resolutions below it\n" +
+                "4. 'Min Level Pixels' drops degraded levels that would be tiny; a zone can override Pixel Per Unit\n" +
                 "5. Use the list above to select specific zones if needed\n" +
                 "6. Click 'Export' to render and save files",
                 MessageType.Info);

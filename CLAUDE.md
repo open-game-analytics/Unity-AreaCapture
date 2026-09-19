@@ -40,8 +40,8 @@ The exporter runs asynchronously via `EditorApplication.update` (state machine o
 
 ### Key classes
 
-- **`CapturePlanner`** (`Runtime/CapturePlan.cs`) — **Pure C#, no UnityEngine.** The rules: rotation classification (`ClassifyRotation`, `FaceSupportsRotation`), which world axes a face shows (`FaceExtents`), the tile grid (`GridFor`), and `PlanFace` (LoD levels → `TileJob`s with offsets and pixel sizes). Also defines `CaptureFace`, `RotationAxis`, `TileJob`.
-- **`CaptureZone`** (`Runtime/CaptureZone.cs`) — `MonoBehaviour` + required `BoxCollider`. One free-form box: axis, cubemap flag, strict clipping, filename override, and LoD settings (`Lod Levels`, `First Level`, `Pixel Per Unit Override`). `WorldCenter` / `OrientedSize` (collider size × lossy scale — **not** the world AABB) / `RotationAbout` give the true oriented box. Gizmo drawn in `OnDrawGizmos`.
+- **`CapturePlanner`** (`Runtime/CapturePlan.cs`) — **Pure C#, no UnityEngine.** The rules: rotation classification (`ClassifyRotation`, `FaceSupportsRotation`), which world axes a face shows (`FaceExtents`), the tile grid (`GridFor`), `LevelPixelsPerUnit` (the LoD ladder: max ppu halved per level, levels below the min-pixels size dropped, tagged L0 = coarsest), and `PlanFace` (levels → `TileJob`s with offsets and pixel sizes). Also defines `CaptureFace`, `RotationAxis`, `TileJob`.
+- **`CaptureZone`** (`Runtime/CaptureZone.cs`) — `MonoBehaviour` + required `BoxCollider`. One free-form box: axis, cubemap flag, strict clipping, filename override, and an optional `Pixel Per Unit Override` (its max-quality ppu). LoD level count and min level size are **global** export settings (`ExportSettings.LodLevels` / `MinLevelPixels`, defaults 4 / 256), not per zone. `WorldCenter` / `OrientedSize` (collider size × lossy scale — **not** the world AABB) / `RotationAbout` give the true oriented box. Gizmo drawn in `OnDrawGizmos`.
 - **`RuntimeAreaCapture`** (`Runtime/RuntimeAreaCapture.cs`) — Stateful renderer. Owns a hidden internal camera. `CaptureTile()` places the camera on the face along the zone's own axes, shifts it in the image plane to the tile centre, renders to a RenderTexture and reads back a `Texture2D`. `CaptureArea()` is a single-image convenience wrapper.
 - **`AreaCaptureExporter`** (`Editor/AreaCaptureExporter.cs`) — Static export pipeline. `BuildPlan` is separated from rendering so counts/warnings need no rendering (`CountImages` is the cheap variant for GUI repaints). Files: `{Name}_{Face}_L{level}_{col}x{row}.png`.
 - **`CaptureMetadata` & co.** (`Runtime/CaptureMetadata.cs`) — Pure C# schema v2 model (`BoxMetadata` → `FaceMetadata` → `LodMetadata` → `ImageMetadata`) and `CaptureMetadataJson`, a hand-written culture-invariant JSON writer (4 dp for position/size, 6 dp for the quaternion).
@@ -60,6 +60,7 @@ The metadata contract is documented in the dashboard repo: `Dashboard/docs/Captu
 - Zone axes come from the transform, sizes from `OrientedSize`, so a zone rotated about one axis is captured aligned to itself.
 - **Normal clipping**: near = 0.3, far = 1000
 - **Strict clipping**: near = 10, far = 10 + depth of zone along capture axis (clips to exact volume bounds)
+- Level ppu: the finest level is the max ppu (zone override, else the window's Pixel Per Unit); level `k` steps down halve it. Level tags are per box, L0 = coarsest.
 - Tile pixel size = round(tile world size × ppu of the level); tiles are planned so none exceeds `Max Tile Pixels` (≤ `SystemInfo.maxTextureSize`)
 
 ### CaptureAxis enum

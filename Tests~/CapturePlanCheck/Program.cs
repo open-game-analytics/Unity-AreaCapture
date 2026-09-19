@@ -47,9 +47,9 @@ var demo = demoDoc.RootElement;
 Eq(demo.GetProperty("schema_version").GetInt32(), 2, "demo is v2");
 
 // Same inputs the JS generator used (see generate-demo.mjs)
-var specs = new Dictionary<string, (float[] pos, float[] size, MetaQuat rot, int levels, int first, float ppu)>
+var specs = new Dictionary<string, (float[] pos, float[] size, MetaQuat rot, int levels, int tagOffset, float maxPpu)>
 {
-    ["Overview"] = (new[] { 0f, 0f, 0f }, new[] { 100f, 50f, 10f }, MetaQuat.Identity, 3, 0, 2f),
+    ["Overview"] = (new[] { 0f, 0f, 0f }, new[] { 100f, 50f, 10f }, MetaQuat.Identity, 3, 0, 8f),
     ["Detail"] = (new[] { 20f, 10f, 0f }, new[] { 30f, 15f, 10f }, new MetaQuat(0, 0, 0.258819f, 0.965926f), 1, 3, 16f),
     ["Corner"] = (new[] { -30f, -10f, 0f }, new[] { 20f, 10f, 10f }, MetaQuat.Identity, 1, 2, 8f),
 };
@@ -67,14 +67,17 @@ foreach (var boxJson in demo.GetProperty("boxes").EnumerateArray())
         Size = new MetaVec3(s.size[0], s.size[1], s.size[2]),
     };
     var face = box.GetOrAddFace(CaptureFace.Front);
-    var jobs = CapturePlanner.PlanFace(CaptureFace.Front, s.size[0], s.size[1], s.size[2], s.ppu, s.levels, s.first, 200);
+    var jobs = CapturePlanner.PlanFace(CaptureFace.Front, s.size[0], s.size[1], s.size[2], s.maxPpu, s.levels, 0, 200);
     foreach (var lodGroup in jobs.GroupBy(j => j.Level))
     {
         var first = lodGroup.First();
-        var lod = new LodMetadata { Level = first.Level, PixelsPerUnit = first.PixelsPerUnit, Cols = first.Cols, Rows = first.Rows };
+        // The planner tags levels per box from 0; the fixture gives hand-placed detail boxes a higher global tag,
+        // which the exporters no longer write, so it is added here to keep comparing grids/pixel sizes exactly.
+        int tag = first.Level + s.tagOffset;
+        var lod = new LodMetadata { Level = tag, PixelsPerUnit = first.PixelsPerUnit, Cols = first.Cols, Rows = first.Rows };
         foreach (var j in lodGroup)
             lod.Images.Add(new ImageMetadata { Col = j.Col, Row = j.Row, PixelWidth = j.PixelWidth, PixelHeight = j.PixelHeight,
-                Filename = $"{id}_Front_L{j.Level}_{j.Col}x{j.Row}.png" });
+                Filename = $"{id}_Front_L{tag}_{j.Col}x{j.Row}.png" });
         face.Lods.Add(lod);
     }
     built.Boxes.Add(box);
@@ -143,9 +146,29 @@ for (int n = 0; n < 2000; n++)
     float ppu = (float)(rng.NextDouble() * 60 + 0.5);
     int levels = rng.Next(1, 6);
     int max = new[] { 64, 200, 512, 4096, 8192 }[rng.Next(5)];
-    if (CapturePlanner.CountTiles(face, sx, sy, sz, ppu, levels, max) != CapturePlanner.PlanFace(face, sx, sy, sz, ppu, levels, 0, max).Count) mismatches++;
+    int minPx = new[] { 0, 64, 256, 1000 }[rng.Next(4)];
+    if (CapturePlanner.CountTiles(face, sx, sy, sz, ppu, levels, minPx, max) != CapturePlanner.PlanFace(face, sx, sy, sz, ppu, levels, minPx, max).Count) mismatches++;
 }
 Eq(mismatches, 0, "CountTiles == PlanFace count over 2000 random inputs");
-Eq(CapturePlanner.CountTiles(CaptureFace.Front, 1, 1, 1, 0, 1, 4096), 0, "CountTiles guards ppu <= 0");
+Eq(CapturePlanner.CountTiles(CaptureFace.Front, 1, 1, 1, 0, 1, 0, 4096), 0, "CountTiles guards ppu <= 0");
+
+// ── LoD ladder: ppu is the max quality, levels degrade down from it ─────
+var ladder = CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 0);
+Check(ladder.SequenceEqual(new[] { 12.5, 25, 50, 100 }), $"4 levels @100 => 12.5/25/50/100 coarsest first (got {string.Join("/", ladder)})");
+var ladderJobs = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 4, 0, 4096);
+Eq(ladderJobs.Select(j => j.Level).Distinct().OrderBy(l => l).ToList().Count, 4, "4 level tags");
+Eq(ladderJobs.Where(j => j.Level == 3).Select(j => j.PixelsPerUnit).Distinct().Single(), 100f, "top tag is the requested max ppu");
+Eq(ladderJobs.Where(j => j.Level == 0).Select(j => j.PixelsPerUnit).Distinct().Single(), 12.5f, "L0 is the coarsest");
+Check(ladderJobs.All(j => j.PixelsPerUnit <= 100f), "no level is rendered above the requested ppu");
+Eq(CapturePlanner.LevelPixelsPerUnit(20, 10, 1, 1, 0).Count, 1, "single level = only the max");
+
+// min pixels: longest face edge 20 units => 2000/1000/500/250 px at 100/50/25/12.5 ppu
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 256).SequenceEqual(new[] { 25.0, 50, 100 }), "250 px level dropped at min 256");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 250).SequenceEqual(new[] { 12.5, 25, 50, 100 }), "level exactly at the min is kept");
+Check(CapturePlanner.LevelPixelsPerUnit(0.5f, 0.5f, 100, 4, 256).SequenceEqual(new[] { 100.0 }), "max level kept even when below the min");
+Eq(CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 4, 256, 4096).Max(j => j.Level), 2, "tags renumbered from 0 after dropping");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 99, 0).Count == CapturePlanner.MaxLodLevels, "level count clamped to MaxLodLevels");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 0).SequenceEqual(new[] { 100.0 }), "level count < 1 treated as 1");
+Check(CapturePlanner.LevelPixelsPerUnit(CaptureFace.Right, 25, 10, 20, 100, 4, 0).SequenceEqual(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 0)), "face overload uses the face extents");
 Console.WriteLine($"{checks - failures}/{checks} checks passed");
 return failures == 0 ? 0 : 1;

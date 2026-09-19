@@ -19,6 +19,8 @@ namespace AreaCapture.Editor
         internal const string PREF_KEY_BGCOLOR    = "AreaCapture_BGColor";
         internal const string PREF_KEY_CULLMASK   = "AreaCapture_CullMask";
         internal const string PREF_KEY_MAXTILE    = "AreaCapture_MaxTile";
+        internal const string PREF_KEY_LODLEVELS  = "AreaCapture_LodLevels";
+        internal const string PREF_KEY_MINLEVEL   = "AreaCapture_MinLevelPixels";
         public static ExportSettings LoadSettingsFromPrefs()
         {
             var s = new ExportSettings
@@ -29,6 +31,8 @@ namespace AreaCapture.Editor
                 ClearFlags       = (CameraClearFlags)EditorPrefs.GetInt(PREF_KEY_CLEARFLAG, (int)CameraClearFlags.SolidColor),
                 CullingMask      = EditorPrefs.GetInt(PREF_KEY_CULLMASK, -1),
                 MaxTilePixels    = EditorPrefs.GetInt(PREF_KEY_MAXTILE, CapturePlanner.DefaultMaxTilePixels),
+                LodLevels        = EditorPrefs.GetInt(PREF_KEY_LODLEVELS, CapturePlanner.DefaultLodLevels),
+                MinLevelPixels   = EditorPrefs.GetInt(PREF_KEY_MINLEVEL, CapturePlanner.DefaultMinLevelPixels),
             };
             string html = EditorPrefs.GetString(PREF_KEY_BGCOLOR, "#00000000");
             if (ColorUtility.TryParseHtmlString(html, out Color c)) s.BackgroundColor = c;
@@ -37,12 +41,19 @@ namespace AreaCapture.Editor
 
         public class ExportSettings
         {
+            /// <summary>Pixels per world unit of the finest (max quality) LoD level. A zone can override it.</summary>
             public int PixelPerUnit;
             public string OutputDirectory;
             public string MetadataFilename;
 
             /// <summary>Largest PNG edge in pixels. Bigger areas are split into tiles instead of failing.</summary>
             public int MaxTilePixels = CapturePlanner.DefaultMaxTilePixels;
+
+            /// <summary>Levels of detail per face: the finest is <see cref="PixelPerUnit"/>, each further one halves it.</summary>
+            public int LodLevels = CapturePlanner.DefaultLodLevels;
+
+            /// <summary>A degraded level whose whole image would be shorter than this (longest edge, px) is not exported.</summary>
+            public int MinLevelPixels = CapturePlanner.DefaultMinLevelPixels;
 
             // Rendering options
             public CameraClearFlags ClearFlags = CameraClearFlags.SolidColor;
@@ -96,6 +107,33 @@ namespace AreaCapture.Editor
             return Mathf.Clamp(requested, 64, SystemInfo.maxTextureSize);
         }
 
+        /// <summary>Pixels per unit of a zone's finest level: its own override, else the window's setting.</summary>
+        public static float EffectivePixelsPerUnit(CaptureZone zone, ExportSettings settings)
+        {
+            return zone.PixelsPerUnitOverride > 0 ? zone.PixelsPerUnitOverride : settings.PixelPerUnit;
+        }
+
+        /// <summary>
+        /// The pixels per unit of each LoD level (coarsest first, list index = level tag) a zone would export for its
+        /// first exportable face. Empty if the zone cannot be exported. For a cubemap zone other faces may keep
+        /// fewer levels, since the minimum size is checked against each face's own extent.
+        /// </summary>
+        public static List<double> LevelLadder(CaptureZone zone, ExportSettings settings)
+        {
+            Vector3 size = zone.OrientedSize;
+            RotationAxis rotation = zone.RotationAbout;
+            if (size.x <= 0f || size.y <= 0f || size.z <= 0f || rotation == RotationAxis.Unsupported || settings.PixelPerUnit <= 0)
+                return new List<double>();
+
+            foreach (CaptureFace face in zone.FacesToExport())
+            {
+                if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
+                return CapturePlanner.LevelPixelsPerUnit(face, size.x, size.y, size.z,
+                    EffectivePixelsPerUnit(zone, settings), settings.LodLevels, settings.MinLevelPixels);
+            }
+            return new List<double>();
+        }
+
         /// <summary>
         /// How many PNGs a zone would export. Mirrors <see cref="BuildPlan"/> but builds nothing, so it is safe to
         /// call from GUI repaints.
@@ -106,14 +144,14 @@ namespace AreaCapture.Editor
             RotationAxis rotation = zone.RotationAbout;
             if (size.x <= 0f || size.y <= 0f || size.z <= 0f || rotation == RotationAxis.Unsupported) return 0;
 
-            float basePpu = zone.PixelsPerUnitOverride > 0 ? zone.PixelsPerUnitOverride : settings.PixelPerUnit;
+            float maxPpu = EffectivePixelsPerUnit(zone, settings);
             int maxTile = EffectiveMaxTilePixels(settings);
 
             int total = 0;
             foreach (CaptureFace face in zone.FacesToExport())
             {
                 if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
-                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, basePpu, zone.LodLevels, maxTile);
+                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, maxTile);
             }
             return total;
         }
@@ -149,7 +187,7 @@ namespace AreaCapture.Editor
                     continue;
                 }
 
-                float basePpu = zone.PixelsPerUnitOverride > 0 ? zone.PixelsPerUnitOverride : settings.PixelPerUnit;
+                float maxPpu = EffectivePixelsPerUnit(zone, settings);
                 Vector3 center = zone.WorldCenter;
                 Quaternion q = zone.transform.rotation;
 
@@ -172,7 +210,7 @@ namespace AreaCapture.Editor
 
                     FaceMetadata faceMeta = box.GetOrAddFace(face);
                     LodMetadata lod = null;
-                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, basePpu, zone.LodLevels, zone.FirstLevel, maxTile))
+                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, maxTile))
                     {
                         if (lod == null || lod.Level != tile.Level)
                         {
