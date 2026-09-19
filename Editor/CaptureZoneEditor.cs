@@ -21,7 +21,7 @@ namespace AreaCapture.Editor
             var settings = AreaCaptureExporter.LoadSettingsFromPrefs();
             int imageCount = AreaCaptureExporter.CountImages(zone, settings);
             EditorGUILayout.HelpBox(
-                $"Export with the saved settings produces {imageCount} image(s) (max tile {AreaCaptureExporter.EffectiveMaxTilePixels(settings)} px).",
+                $"Export with the saved settings produces {imageCount} image(s) (tile {AreaCaptureExporter.EffectiveTilePixels(settings)} px).",
                 MessageType.None);
 
             EditorGUILayout.Space(4);

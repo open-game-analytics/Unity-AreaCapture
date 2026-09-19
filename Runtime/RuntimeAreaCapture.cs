@@ -75,7 +75,7 @@ namespace AreaCapture.Runtime
             int maxResolution = SystemInfo.maxTextureSize;
             if (job.PixelWidth > maxResolution || job.PixelHeight > maxResolution)
             {
-                Debug.LogError($"Capture resolution ({job.PixelWidth}x{job.PixelHeight}) exceeds system maximum ({maxResolution}). Lower 'Max Tile Pixels'.");
+                Debug.LogError($"Capture resolution ({job.PixelWidth}x{job.PixelHeight}) exceeds system maximum ({maxResolution}). Lower 'Tile Pixels'.");
                 return null;
             }
 

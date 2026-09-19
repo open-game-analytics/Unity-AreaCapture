@@ -65,11 +65,11 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 			},
 			"faces": {
 				"Front": { "lods": [
-					{ "level": 0, "pixels_per_unit": 2, "grid": [1, 1],
+					{ "level": 0, "pixels_per_unit": 2, "grid": [1, 1], "tile_size": [200, 200],
 					  "images": [
 						{ "col": 0, "row": 0, "filename": "Overview_Front_L0_0x0.png", "pixel_size": [200, 100] }
 					  ] },
-					{ "level": 1, "pixels_per_unit": 4, "grid": [2, 1],
+					{ "level": 1, "pixels_per_unit": 4, "grid": [2, 1], "tile_size": [200, 200],
 					  "images": [
 						{ "col": 0, "row": 0, "filename": "Overview_Front_L1_0x0.png", "pixel_size": [200, 200] },
 						{ "col": 1, "row": 0, "filename": "Overview_Front_L1_1x0.png", "pixel_size": [200, 200] }
@@ -83,11 +83,11 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 
 - `size` is the box's **oriented** size (collider size × scale), and `position` its world centre.
 - Files are named `{Name}_{Face}_L{level}_{col}x{row}.png`; `row` 0 is the top of the box.
-- Every PNG is at most **Max Tile Pixels** wide/tall; larger areas are split into a tile grid.
+- Every level is cut into tiles of one constant size, **Tile Pixels** (default 1024), anchored at the top-left corner of the box: `tile_size` in the metadata. Only the last column/row of tiles (and a level smaller than one tile) is cropped to the box.
 
 ## Levels of detail
 
-**Pixel Per Unit** is the maximum quality. **Lod Levels** (a setting of the Area Capture window, applied to every zone) adds smaller versions below it: the finest level renders at `Pixel Per Unit`, and each further level at half the resolution of the one before. With 4 levels at 100 ppu that is 12.5 / 25 / 50 / 100 ppu. Levels are tagged from `L0` (coarsest) up to the finest, and each is split into as many tiles as needed. A viewer (the OGA dashboard) picks the level that matches its zoom.
+**Pixel Per Unit** is the maximum quality. **Lod Levels** (a setting of the Area Capture window, applied to every zone) adds smaller versions below it: the finest level renders at `Pixel Per Unit`, and each further level at half the resolution of the one before. With 4 levels at 100 ppu that is 12.5 / 25 / 50 / 100 ppu. Levels are tagged from `L0` (coarsest) up to the finest, and each is cut into tiles of the same pixel size (**Tile Pixels**), so a finer level replaces one tile with four and every tile costs the same to load and stream. A viewer (the OGA dashboard) picks the level that matches its zoom.
 
 **Min Level Pixels** prevents tiny textures: a degraded level is skipped when the longest edge of its whole image would be below this size, so a small zone gets fewer levels than a large one. The finest level is always exported.
 
@@ -121,6 +121,6 @@ Marks a volume for capture.
 ## Tips
 
 - **Better Quality**: Increase "Pixel Per Unit" (the maximum). "Lod Levels" only adds smaller versions below it.
-- **Large Areas**: No need to lower the resolution — areas larger than "Max Tile Pixels" are tiled automatically.
+- **Large Areas**: No need to lower the resolution — areas larger than one tile are tiled automatically; "Tile Pixels" (default 1024) sets the size of every tile, smaller tiles stream in finer steps but mean more files.
 - **Filenames**: Use the "Filename Override" in the CaptureZone inspector for specific naming requirements.
 - **Selective Export**: Use the checkboxes in the Area Capture window to only re-export changed areas.

@@ -74,7 +74,7 @@ foreach (var boxJson in demo.GetProperty("boxes").EnumerateArray())
         // The planner tags levels per box from 0; the fixture gives hand-placed detail boxes a higher global tag,
         // which the exporters no longer write, so it is added here to keep comparing grids/pixel sizes exactly.
         int tag = first.Level + s.tagOffset;
-        var lod = new LodMetadata { Level = tag, PixelsPerUnit = first.PixelsPerUnit, Cols = first.Cols, Rows = first.Rows };
+        var lod = new LodMetadata { Level = tag, PixelsPerUnit = first.PixelsPerUnit, Cols = first.Cols, Rows = first.Rows, TilePixels = first.TilePixels };
         foreach (var j in lodGroup)
             lod.Images.Add(new ImageMetadata { Col = j.Col, Row = j.Row, PixelWidth = j.PixelWidth, PixelHeight = j.PixelHeight,
                 Filename = $"{id}_Front_L{tag}_{j.Col}x{j.Row}.png" });
@@ -170,5 +170,44 @@ Eq(CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 4, 256, 4096).Max(
 Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 99, 0).Count == CapturePlanner.MaxLodLevels, "level count clamped to MaxLodLevels");
 Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 0).SequenceEqual(new[] { 100.0 }), "level count < 1 treated as 1");
 Check(CapturePlanner.LevelPixelsPerUnit(CaptureFace.Right, 25, 10, 20, 100, 4, 0).SequenceEqual(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 0)), "face overload uses the face extents");
+// ── constant tile size: anchored at the top-left, cropped only at the right/bottom, a quadtree across levels ──
+var cropped = CapturePlanner.PlanFace(CaptureFace.Front, 30, 15, 1, 16, 1, 0, 200);   // 480x240 px => 3x2 tiles of 200 px
+Eq(cropped.Count, 6, "480x240 px in 200 px tiles => 3x2");
+Check(cropped.All(j => j.TilePixels == 200), "tile size recorded on every job");
+Eq(string.Join(",", cropped.Where(j => j.Row == 0).Select(j => j.PixelWidth)), "200,200,80", "columns are 200,200 and a cropped 80");
+Eq(string.Join(",", cropped.Where(j => j.Col == 0).Select(j => j.PixelHeight)), "200,40", "rows are 200 and a cropped 40");
+var corner = cropped.First(j => j.Col == 2 && j.Row == 1);
+Check(Math.Abs(corner.TileWidthUnits - 5f) < 1e-5 && Math.Abs(corner.TileHeightUnits - 2.5f) < 1e-5, "cropped tile covers 5 x 2.5 units");
+Check(Math.Abs(corner.OffsetU - 12.5f) < 1e-4 && Math.Abs(corner.OffsetV - -6.25f) < 1e-4, $"cropped corner tile centre (got {corner.OffsetU},{corner.OffsetV})");
+var small = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 4, 1, 0, 1024);       // 80x40 px: one tile smaller than the tile size
+Eq(small.Count, 1, "a level smaller than one tile is a single tile");
+Check(small[0].PixelWidth == 80 && small[0].PixelHeight == 40 && small[0].TilePixels == 1024, "...cropped to the face, tile size still nominal");
+
+int nesting = 0, notConstant = 0;
+var qrng = new Random(7);
+for (int n = 0; n < 500; n++)
+{
+    float sx = (float)(qrng.NextDouble() * 150 + 1), sy = (float)(qrng.NextDouble() * 150 + 1);
+    float ppu = (float)(qrng.NextDouble() * 30 + 1);
+    int tile = new[] { 64, 200, 512 }[qrng.Next(3)];
+    var jobsQ = CapturePlanner.PlanFace(CaptureFace.Front, sx, sy, 1, ppu, qrng.Next(2, 6), 0, tile);
+    foreach (var j in jobsQ)
+    {
+        if ((j.Col < j.Cols - 1 && j.PixelWidth != tile) || (j.Row < j.Rows - 1 && j.PixelHeight != tile) || j.PixelWidth > tile || j.PixelHeight > tile) notConstant++;
+        if (j.Level == 0) continue;
+        // The tile of the level below that contains this one
+        var parent = jobsQ.FirstOrDefault(p => p.Level == j.Level - 1 && p.Col == j.Col / 2 && p.Row == j.Row / 2);
+        if (parent.TileWidthUnits == 0) { nesting++; continue; }
+        float tol = 1e-3f; // floating-point slack only: levels are derived from the finest size, so the nesting is exact
+        bool inside = j.OffsetU - j.TileWidthUnits / 2 >= parent.OffsetU - parent.TileWidthUnits / 2 - tol
+            && j.OffsetU + j.TileWidthUnits / 2 <= parent.OffsetU + parent.TileWidthUnits / 2 + tol
+            && j.OffsetV - j.TileHeightUnits / 2 >= parent.OffsetV - parent.TileHeightUnits / 2 - tol
+            && j.OffsetV + j.TileHeightUnits / 2 <= parent.OffsetV + parent.TileHeightUnits / 2 + tol;
+        if (!inside) nesting++;
+    }
+}
+Eq(notConstant, 0, "every tile but the last column/row is exactly the tile size (500 random inputs)");
+Eq(nesting, 0, "every tile lies inside the tile (col/2, row/2) of the level below it (500 random inputs)");
+
 Console.WriteLine($"{checks - failures}/{checks} checks passed");
 return failures == 0 ? 0 : 1;

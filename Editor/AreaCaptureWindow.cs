@@ -33,7 +33,7 @@ namespace AreaCapture.Editor
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_CLEARFLAG, (int)settings.ClearFlags);
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_CULLMASK, settings.CullingMask);
                 EditorPrefs.SetString(AreaCaptureExporter.PREF_KEY_BGCOLOR, "#" + ColorUtility.ToHtmlStringRGBA(settings.BackgroundColor));
-                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_MAXTILE, settings.MaxTilePixels);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_TILE, settings.TilePixels);
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_LODLEVELS, settings.LodLevels);
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_MINLEVEL, settings.MinLevelPixels);
             }
@@ -52,8 +52,8 @@ namespace AreaCapture.Editor
             settings.PixelPerUnit = EditorGUILayout.IntField(new GUIContent("Pixel Per Unit", "Maximum quality: pixels per world unit of the finest LoD level (a zone can override it). A 1-unit zone at 100 PPU produces a 100×100 px image. Higher values = sharper output and larger files."), settings.PixelPerUnit);
             settings.LodLevels = EditorGUILayout.IntSlider(new GUIContent("Lod Levels", "How many resolutions to export per face. The finest is Pixel Per Unit; each further level is half the resolution of the one before, so a viewer can load smaller images while zoomed out. 1 = only the maximum quality."), settings.LodLevels, 1, CapturePlanner.MaxLodLevels);
             settings.MinLevelPixels = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Min Level Pixels", "Degraded levels whose whole image would be smaller than this (longest edge, in pixels) are not exported, so no tiny textures. The maximum quality level is always exported. 0 = no limit."), settings.MinLevelPixels));
-            settings.MaxTilePixels = EditorGUILayout.IntField(new GUIContent("Max Tile Pixels", $"Largest edge of any exported PNG. Bigger areas are split into a grid of tiles instead of failing. Limited to the GPU texture size ({SystemInfo.maxTextureSize})."), settings.MaxTilePixels);
-            settings.MaxTilePixels = Mathf.Clamp(settings.MaxTilePixels, 64, SystemInfo.maxTextureSize);
+            settings.TilePixels = EditorGUILayout.IntField(new GUIContent("Tile Pixels", $"Pixel size of every tile of every level: each level is cut into tiles this big, so a finer level replaces one tile with four. Tiles on the right/bottom edge and levels smaller than one tile are cropped. Limited to the GPU texture size ({SystemInfo.maxTextureSize})."), settings.TilePixels);
+            settings.TilePixels = Mathf.Clamp(settings.TilePixels, 64, SystemInfo.maxTextureSize);
 
             EditorGUILayout.Space();
 

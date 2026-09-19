@@ -38,13 +38,15 @@ namespace AreaCapture
         public readonly float OffsetV;
         public readonly int PixelWidth;
         public readonly int PixelHeight;
+        /// <summary>Pixel size of a full tile at this level; edge tiles and levels smaller than one tile are cropped below it.</summary>
+        public readonly int TilePixels;
 
         public TileJob(CaptureFace face, int level, int col, int row, int cols, int rows, float pixelsPerUnit,
-            float tileWidthUnits, float tileHeightUnits, float offsetU, float offsetV, int pixelWidth, int pixelHeight)
+            float tileWidthUnits, float tileHeightUnits, float offsetU, float offsetV, int pixelWidth, int pixelHeight, int tilePixels)
         {
             Face = face; Level = level; Col = col; Row = row; Cols = cols; Rows = rows;
             PixelsPerUnit = pixelsPerUnit; TileWidthUnits = tileWidthUnits; TileHeightUnits = tileHeightUnits;
-            OffsetU = offsetU; OffsetV = offsetV; PixelWidth = pixelWidth; PixelHeight = pixelHeight;
+            OffsetU = offsetU; OffsetV = offsetV; PixelWidth = pixelWidth; PixelHeight = pixelHeight; TilePixels = tilePixels;
         }
     }
 
@@ -54,8 +56,8 @@ namespace AreaCapture
     /// </summary>
     public static class CapturePlanner
     {
-        /// <summary>Largest PNG edge a tile may have unless the export settings say otherwise.</summary>
-        public const int DefaultMaxTilePixels = 4096;
+        /// <summary>Pixel size of a full tile unless the export settings say otherwise.</summary>
+        public const int DefaultTilePixels = 1024;
 
         /// <summary>More levels than this (each halves the resolution) would be below any useful size.</summary>
         public const int MaxLodLevels = 8;
@@ -66,10 +68,11 @@ namespace AreaCapture
         /// <summary>Default number of LoD levels per face.</summary>
         public const int DefaultLodLevels = 4;
 
+        private const double GridEpsilon = 1e-6;
+
         /// <summary>Quaternion component below which a rotation counts as "not about this axis".</summary>
         public const float RotationEpsilon = 1e-4f;
 
-        private const double GridEpsilon = 1e-6;
 
         public static RotationAxis ClassifyRotation(float x, float y, float z, float w)
         {
@@ -110,11 +113,27 @@ namespace AreaCapture
             }
         }
 
-        /// <summary>How many tiles cover an extent at a resolution so that no PNG exceeds <paramref name="maxTilePixels"/>.</summary>
-        public static void GridFor(float widthUnits, float heightUnits, double pixelsPerUnit, int maxTilePixels, out int cols, out int rows)
+        /// <summary>Pixels an extent takes at the finest level (at least 1), rounded up so the image covers the whole extent.</summary>
+        public static int FinestPixels(float units, double maxPixelsPerUnit)
         {
-            cols = Math.Max(1, (int)Math.Ceiling(widthUnits * pixelsPerUnit / maxTilePixels - GridEpsilon));
-            rows = Math.Max(1, (int)Math.Ceiling(heightUnits * pixelsPerUnit / maxTilePixels - GridEpsilon));
+            return (int)Math.Max(1L, (long)Math.Ceiling(units * maxPixelsPerUnit - GridEpsilon));
+        }
+
+        /// <summary>
+        /// Pixels an extent takes at a level <paramref name="stepsBelowFinest"/> halvings below the finest one: the finest size
+        /// halved and rounded up each time. Deriving every level from the finest size (rather than rounding each one on its
+        /// own) makes the tile grids nest exactly: a tile of one level is covered by four tiles of the next.
+        /// </summary>
+        public static int LevelPixels(int finestPixels, int stepsBelowFinest)
+        {
+            return (int)(((long)finestPixels + (1L << stepsBelowFinest) - 1) >> stepsBelowFinest);
+        }
+
+        /// <summary>How many tiles of <paramref name="tilePixels"/> pixels cover an image of the given size in pixels.</summary>
+        public static void GridFor(int totalWidth, int totalHeight, int tilePixels, out int cols, out int rows)
+        {
+            cols = (int)(((long)totalWidth + tilePixels - 1) / tilePixels);
+            rows = (int)(((long)totalHeight + tilePixels - 1) / tilePixels);
         }
 
         /// <summary>
@@ -150,16 +169,21 @@ namespace AreaCapture
 
         /// <summary>Number of tiles <see cref="PlanFace"/> would produce, without building them. Cheap enough for UI repaints.</summary>
         public static int CountTiles(CaptureFace face, float sizeX, float sizeY, float sizeZ,
-            float maxPixelsPerUnit, int levelCount, int minLevelPixels, int maxTilePixels)
+            float maxPixelsPerUnit, int levelCount, int minLevelPixels, int tilePixels)
         {
-            if (maxPixelsPerUnit <= 0f || maxTilePixels < 1) return 0;
+            if (maxPixelsPerUnit <= 0f || tilePixels < 1) return 0;
 
             FaceExtents(face, sizeX, sizeY, sizeZ, out float width, out float height);
 
+            List<double> levelPpus = LevelPixelsPerUnit(width, height, maxPixelsPerUnit, levelCount, minLevelPixels);
+            int finestW = FinestPixels(width, maxPixelsPerUnit);
+            int finestH = FinestPixels(height, maxPixelsPerUnit);
+
             int total = 0;
-            foreach (double ppu in LevelPixelsPerUnit(width, height, maxPixelsPerUnit, levelCount, minLevelPixels))
+            for (int i = 0; i < levelPpus.Count; i++)
             {
-                GridFor(width, height, ppu, maxTilePixels, out int cols, out int rows);
+                int steps = levelPpus.Count - 1 - i;
+                GridFor(LevelPixels(finestW, steps), LevelPixels(finestH, steps), tilePixels, out int cols, out int rows);
                 total += cols * rows;
             }
             return total;
@@ -169,34 +193,49 @@ namespace AreaCapture
         /// Tiles of every LoD level of one face. <paramref name="maxPixelsPerUnit"/> is the finest level's resolution;
         /// see <see cref="LevelPixelsPerUnit(float, float, double, int, int)"/> for the coarser ones. Levels are tagged
         /// from 0 (coarsest) upward, so a higher tag is always more detail. Order: level, then row, then column.
+        /// <para>
+        /// Every tile is <paramref name="tilePixels"/> square, anchored at the face's top-left corner; only the last
+        /// column/row (and a level smaller than one tile) is cropped to the face. Adjacent levels differ by a factor
+        /// of two in resolution and their image sizes are derived from the finest one (<see cref="LevelPixels"/>), so a
+        /// finer level replaces each tile with four: children of (col, row) are (2col..2col+1, 2row..2row+1), and every
+        /// child lies inside its parent.
+        /// </para>
         /// </summary>
         public static List<TileJob> PlanFace(CaptureFace face, float sizeX, float sizeY, float sizeZ,
-            float maxPixelsPerUnit, int levelCount, int minLevelPixels, int maxTilePixels)
+            float maxPixelsPerUnit, int levelCount, int minLevelPixels, int tilePixels)
         {
             if (maxPixelsPerUnit <= 0f) throw new ArgumentOutOfRangeException(nameof(maxPixelsPerUnit), "Pixels per unit must be positive.");
-            if (maxTilePixels < 1) throw new ArgumentOutOfRangeException(nameof(maxTilePixels));
+            if (tilePixels < 1) throw new ArgumentOutOfRangeException(nameof(tilePixels));
 
             FaceExtents(face, sizeX, sizeY, sizeZ, out float width, out float height);
             List<double> levelPpus = LevelPixelsPerUnit(width, height, maxPixelsPerUnit, levelCount, minLevelPixels);
+
+            int finestW = FinestPixels(width, maxPixelsPerUnit);
+            int finestH = FinestPixels(height, maxPixelsPerUnit);
 
             var jobs = new List<TileJob>();
             for (int i = 0; i < levelPpus.Count; i++)
             {
                 double ppu = levelPpus[i];
-                GridFor(width, height, ppu, maxTilePixels, out int cols, out int rows);
-
-                float tileW = width / cols;
-                float tileH = height / rows;
-                int pxW = Math.Max(1, (int)Math.Round(tileW * ppu, MidpointRounding.AwayFromZero));
-                int pxH = Math.Max(1, (int)Math.Round(tileH * ppu, MidpointRounding.AwayFromZero));
+                int steps = levelPpus.Count - 1 - i;
+                int totalW = LevelPixels(finestW, steps);
+                int totalH = LevelPixels(finestH, steps);
+                GridFor(totalW, totalH, tilePixels, out int cols, out int rows);
 
                 for (int row = 0; row < rows; row++)
                 {
+                    int pxH = (int)Math.Min(tilePixels, totalH - (long)row * tilePixels);
+                    float tileH = (float)(pxH / ppu);
+                    float originY = (float)((long)row * tilePixels / ppu); // from the top edge
+                    float v = height / 2f - (originY + tileH / 2f);
+
                     for (int col = 0; col < cols; col++)
                     {
-                        float u = (col + 0.5f) / cols * width - width / 2f;
-                        float v = height / 2f - (row + 0.5f) / rows * height;
-                        jobs.Add(new TileJob(face, i, col, row, cols, rows, (float)ppu, tileW, tileH, u, v, pxW, pxH));
+                        int pxW = (int)Math.Min(tilePixels, totalW - (long)col * tilePixels);
+                        float tileW = (float)(pxW / ppu);
+                        float originX = (float)((long)col * tilePixels / ppu); // from the left edge
+                        float u = originX + tileW / 2f - width / 2f;
+                        jobs.Add(new TileJob(face, i, col, row, cols, rows, (float)ppu, tileW, tileH, u, v, pxW, pxH, tilePixels));
                     }
                 }
             }

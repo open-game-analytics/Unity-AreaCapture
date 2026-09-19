@@ -18,7 +18,7 @@ namespace AreaCapture.Editor
         internal const string PREF_KEY_CLEARFLAG  = "AreaCapture_ClearFlag";
         internal const string PREF_KEY_BGCOLOR    = "AreaCapture_BGColor";
         internal const string PREF_KEY_CULLMASK   = "AreaCapture_CullMask";
-        internal const string PREF_KEY_MAXTILE    = "AreaCapture_MaxTile";
+        internal const string PREF_KEY_TILE       = "AreaCapture_TilePixels";
         internal const string PREF_KEY_LODLEVELS  = "AreaCapture_LodLevels";
         internal const string PREF_KEY_MINLEVEL   = "AreaCapture_MinLevelPixels";
         public static ExportSettings LoadSettingsFromPrefs()
@@ -30,7 +30,7 @@ namespace AreaCapture.Editor
                 MetadataFilename = EditorPrefs.GetString(PREF_KEY_META, "capture_metadata.json"),
                 ClearFlags       = (CameraClearFlags)EditorPrefs.GetInt(PREF_KEY_CLEARFLAG, (int)CameraClearFlags.SolidColor),
                 CullingMask      = EditorPrefs.GetInt(PREF_KEY_CULLMASK, -1),
-                MaxTilePixels    = EditorPrefs.GetInt(PREF_KEY_MAXTILE, CapturePlanner.DefaultMaxTilePixels),
+                TilePixels    = EditorPrefs.GetInt(PREF_KEY_TILE, CapturePlanner.DefaultTilePixels),
                 LodLevels        = EditorPrefs.GetInt(PREF_KEY_LODLEVELS, CapturePlanner.DefaultLodLevels),
                 MinLevelPixels   = EditorPrefs.GetInt(PREF_KEY_MINLEVEL, CapturePlanner.DefaultMinLevelPixels),
             };
@@ -47,7 +47,7 @@ namespace AreaCapture.Editor
             public string MetadataFilename;
 
             /// <summary>Largest PNG edge in pixels. Bigger areas are split into tiles instead of failing.</summary>
-            public int MaxTilePixels = CapturePlanner.DefaultMaxTilePixels;
+            public int TilePixels = CapturePlanner.DefaultTilePixels;
 
             /// <summary>Levels of detail per face: the finest is <see cref="PixelPerUnit"/>, each further one halves it.</summary>
             public int LodLevels = CapturePlanner.DefaultLodLevels;
@@ -100,10 +100,10 @@ namespace AreaCapture.Editor
             ExportZones(zones, settings, onComplete);
         }
 
-        /// <summary>Largest tile edge actually used: the setting, limited by what the GPU can render.</summary>
-        public static int EffectiveMaxTilePixels(ExportSettings settings)
+        /// <summary>Tile size actually used: the setting, limited by what the GPU can render.</summary>
+        public static int EffectiveTilePixels(ExportSettings settings)
         {
-            int requested = settings.MaxTilePixels <= 0 ? CapturePlanner.DefaultMaxTilePixels : settings.MaxTilePixels;
+            int requested = settings.TilePixels <= 0 ? CapturePlanner.DefaultTilePixels : settings.TilePixels;
             return Mathf.Clamp(requested, 64, SystemInfo.maxTextureSize);
         }
 
@@ -145,13 +145,13 @@ namespace AreaCapture.Editor
             if (size.x <= 0f || size.y <= 0f || size.z <= 0f || rotation == RotationAxis.Unsupported) return 0;
 
             float maxPpu = EffectivePixelsPerUnit(zone, settings);
-            int maxTile = EffectiveMaxTilePixels(settings);
+            int tilePixels = EffectiveTilePixels(settings);
 
             int total = 0;
             foreach (CaptureFace face in zone.FacesToExport())
             {
                 if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
-                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, maxTile);
+                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, tilePixels);
             }
             return total;
         }
@@ -163,7 +163,7 @@ namespace AreaCapture.Editor
         public static ExportPlan BuildPlan(CaptureZone[] zones, ExportSettings settings)
         {
             var plan = new ExportPlan();
-            int maxTile = EffectiveMaxTilePixels(settings);
+            int tilePixels = EffectiveTilePixels(settings);
             var usedIds = new HashSet<string>();
 
             for (int z = 0; z < zones.Length; z++)
@@ -210,11 +210,11 @@ namespace AreaCapture.Editor
 
                     FaceMetadata faceMeta = box.GetOrAddFace(face);
                     LodMetadata lod = null;
-                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, maxTile))
+                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, tilePixels))
                     {
                         if (lod == null || lod.Level != tile.Level)
                         {
-                            lod = new LodMetadata { Level = tile.Level, PixelsPerUnit = tile.PixelsPerUnit, Cols = tile.Cols, Rows = tile.Rows };
+                            lod = new LodMetadata { Level = tile.Level, PixelsPerUnit = tile.PixelsPerUnit, Cols = tile.Cols, Rows = tile.Rows, TilePixels = tile.TilePixels };
                             faceMeta.Lods.Add(lod);
                         }
 

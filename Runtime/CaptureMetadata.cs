@@ -36,6 +36,8 @@ namespace AreaCapture
         public float PixelsPerUnit;
         public int Cols = 1;
         public int Rows = 1;
+        /// <summary>Pixel size of a full tile (written as `tile_size`); 0 = not fixed, the box is divided evenly into Cols x Rows.</summary>
+        public int TilePixels;
         public List<ImageMetadata> Images = new List<ImageMetadata>();
     }
 
@@ -138,7 +140,13 @@ namespace AreaCapture
             sb.Append("\n\t\t\t\t\t{ \"level\": ").Append(lod.Level.ToString(CultureInfo.InvariantCulture));
             sb.Append(", \"pixels_per_unit\": ").Append(Num(lod.PixelsPerUnit, VectorDecimals));
             sb.Append(", \"grid\": [").Append(lod.Cols.ToString(CultureInfo.InvariantCulture)).Append(", ")
-              .Append(lod.Rows.ToString(CultureInfo.InvariantCulture)).Append("],\n");
+              .Append(lod.Rows.ToString(CultureInfo.InvariantCulture)).Append("]");
+            if (lod.TilePixels > 0)
+            {
+                string tile = lod.TilePixels.ToString(CultureInfo.InvariantCulture);
+                sb.Append(", \"tile_size\": [").Append(tile).Append(", ").Append(tile).Append("]");
+            }
+            sb.Append(",\n");
             sb.Append("\t\t\t\t\t  \"images\": [");
             for (int i = 0; i < lod.Images.Count; i++)
             {
