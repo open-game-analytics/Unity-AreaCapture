@@ -1,0 +1,19 @@
+# Build output (Tests~/CapturePlanCheck and any Unity host project opened directly)
+[Bb]in/
+[Oo]bj/
+
+# Unity host-project artifacts (if this package is ever opened as a project root
+# rather than added via Package Manager -> add from disk)
+[Ll]ibrary/
+[Tt]emp/
+[Ll]ogs/
+[Uu]serSettings/
+*.csproj
+*.sln
+*.unityproj
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
