@@ -272,6 +272,18 @@ namespace AreaCapture.Editor
             bool isInitializing = true;
 
             EditorApplication.CallbackFunction updateAction = null;
+
+            // Common teardown for the two failure exits below (cancel, capture failure): stop the
+            // progress bar, unsubscribe from the update loop, release the capturer, and report failure.
+            void Abort(string warning)
+            {
+                EditorUtility.ClearProgressBar();
+                EditorApplication.update -= updateAction;
+                capturer.Cleanup();
+                Debug.LogWarning(warning);
+                onComplete?.Invoke(false);
+            }
+
             updateAction = () =>
             {
                 if (isInitializing)
@@ -306,11 +318,7 @@ namespace AreaCapture.Editor
 
                 if (canceled)
                 {
-                    EditorUtility.ClearProgressBar();
-                    EditorApplication.update -= updateAction;
-                    capturer.Cleanup();
-                    Debug.LogWarning("Capture export canceled by user.");
-                    onComplete?.Invoke(false);
+                    Abort("Capture export canceled by user.");
                     return;
                 }
 
@@ -325,11 +333,7 @@ namespace AreaCapture.Editor
                 if (texture == null)
                 {
                     // Failed capture (e.g. out of memory)
-                    EditorUtility.ClearProgressBar();
-                    EditorApplication.update -= updateAction;
-                    capturer.Cleanup();
-                    Debug.LogWarning($"Capture export aborted at '{job.Filename}' due to a rendering failure.");
-                    onComplete?.Invoke(false);
+                    Abort($"Capture export aborted at '{job.Filename}' due to a rendering failure.");
                     return;
                 }
 
