@@ -1,0 +1,39 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+jobs:
+    capture-plan-check:
+        runs-on: ubuntu-latest
+        steps:
+            # Program.cs cross-checks against the dashboard's shared demo fixture by the same
+            # relative path a local `dotnet run` uses in the monorepo layout (Unity-AreaCapture/
+            # and Dashboard/ as siblings) — check out both repos into that same layout here.
+            #
+            # oga-dashboard is currently a private repo, so the default GITHUB_TOKEN can't check
+            # it out from here: this step fails, but continue-on-error lets the job carry on.
+            # Program.cs itself skips (not fails) that one cross-check when the fixture isn't
+            # found, so every other check still runs and this job still reports pass/fail on
+            # them. If oga-dashboard is ever made public, or a token with cross-repo read access
+            # is added as a secret, this step starts succeeding and the cross-check runs again
+            # with no further changes needed here.
+            - uses: actions/checkout@v4
+              with:
+                  path: Unity-AreaCapture
+
+            - uses: actions/checkout@v4
+              continue-on-error: true
+              with:
+                  repository: open-game-analytics/oga-dashboard
+                  path: Dashboard/oga-dashboard
+
+            - uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: '8.0.x'
+
+            - name: Run CapturePlanCheck
+              working-directory: Unity-AreaCapture/Tests~/CapturePlanCheck
+              run: dotnet run

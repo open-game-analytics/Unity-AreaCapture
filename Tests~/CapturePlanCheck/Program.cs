@@ -40,86 +40,95 @@ var t = grid22.First(j => j.Col == 0 && j.Row == 0);
 Check(Math.Abs(t.OffsetU - -7.5f) < 1e-5 && Math.Abs(t.OffsetV - 2.5f) < 1e-5, $"tile 0,0 is top-left (got {t.OffsetU},{t.OffsetV})");
 
 // ── cross-check against the JS demo dataset ─────────────────────────────
-// Run from this folder: dotnet run   (override with the first argument)
+// Run from this folder: dotnet run   (override with the first argument). Skipped rather than
+// failed when the fixture isn't reachable (e.g. CI running this repo alone, without the private
+// oga-dashboard sibling checked out) — every other check above/below still runs either way.
 var repo = args.Length > 0 ? args[0] : "../../../Dashboard/oga-dashboard/tests/fixtures/capture-lod-demo/capture_metadata.json";
-using var demoDoc = JsonDocument.Parse(File.ReadAllText(repo));
-var demo = demoDoc.RootElement;
-Eq(demo.GetProperty("schema_version").GetInt32(), 2, "demo is v2");
-
-// Same inputs the JS generator used (see generate-demo.mjs)
-var specs = new Dictionary<string, (float[] pos, float[] size, MetaQuat rot, int levels, int tagOffset, float maxPpu)>
+if (!File.Exists(repo))
 {
-    ["Overview"] = (new[] { 0f, 0f, 0f }, new[] { 100f, 50f, 10f }, MetaQuat.Identity, 3, 0, 8f),
-    ["Detail"] = (new[] { 20f, 10f, 0f }, new[] { 30f, 15f, 10f }, new MetaQuat(0, 0, 0.258819f, 0.965926f), 1, 3, 16f),
-    ["Corner"] = (new[] { -30f, -10f, 0f }, new[] { 20f, 10f, 10f }, MetaQuat.Identity, 1, 2, 8f),
-};
-
-var built = new CaptureMetadata { Scenario = "lod-demo" };
-foreach (var boxJson in demo.GetProperty("boxes").EnumerateArray())
+    Console.WriteLine($"SKIP: cross-check against the JS demo dataset ('{repo}' not found)");
+}
+else
 {
-    string id = boxJson.GetProperty("id").GetString();
-    var s = specs[id];
-    var box = new BoxMetadata
+    using var demoDoc = JsonDocument.Parse(File.ReadAllText(repo));
+    var demo = demoDoc.RootElement;
+    Eq(demo.GetProperty("schema_version").GetInt32(), 2, "demo is v2");
+
+    // Same inputs the JS generator used (see generate-demo.mjs)
+    var specs = new Dictionary<string, (float[] pos, float[] size, MetaQuat rot, int levels, int tagOffset, float maxPpu)>
     {
-        Id = id,
-        Position = new MetaVec3(s.pos[0], s.pos[1], s.pos[2]),
-        Rotation = s.rot,
-        Size = new MetaVec3(s.size[0], s.size[1], s.size[2]),
+        ["Overview"] = (new[] { 0f, 0f, 0f }, new[] { 100f, 50f, 10f }, MetaQuat.Identity, 3, 0, 8f),
+        ["Detail"] = (new[] { 20f, 10f, 0f }, new[] { 30f, 15f, 10f }, new MetaQuat(0, 0, 0.258819f, 0.965926f), 1, 3, 16f),
+        ["Corner"] = (new[] { -30f, -10f, 0f }, new[] { 20f, 10f, 10f }, MetaQuat.Identity, 1, 2, 8f),
     };
-    var face = box.GetOrAddFace(CaptureFace.Front);
-    var jobs = CapturePlanner.PlanFace(CaptureFace.Front, s.size[0], s.size[1], s.size[2], s.maxPpu, s.levels, 0, 200);
-    foreach (var lodGroup in jobs.GroupBy(j => j.Level))
+
+    var built = new CaptureMetadata { Scenario = "lod-demo" };
+    foreach (var boxJson in demo.GetProperty("boxes").EnumerateArray())
     {
-        var first = lodGroup.First();
-        // The planner tags levels per box from 0; the fixture gives hand-placed detail boxes a higher global tag,
-        // which the exporters no longer write, so it is added here to keep comparing grids/pixel sizes exactly.
-        int tag = first.Level + s.tagOffset;
-        var lod = new LodMetadata { Level = tag, PixelsPerUnit = first.PixelsPerUnit, Cols = first.Cols, Rows = first.Rows, TilePixels = first.TilePixels };
-        foreach (var j in lodGroup)
-            lod.Images.Add(new ImageMetadata { Col = j.Col, Row = j.Row, PixelWidth = j.PixelWidth, PixelHeight = j.PixelHeight,
-                Filename = $"{id}_Front_L{tag}_{j.Col}x{j.Row}.png" });
-        face.Lods.Add(lod);
+        string id = boxJson.GetProperty("id").GetString();
+        var s = specs[id];
+        var box = new BoxMetadata
+        {
+            Id = id,
+            Position = new MetaVec3(s.pos[0], s.pos[1], s.pos[2]),
+            Rotation = s.rot,
+            Size = new MetaVec3(s.size[0], s.size[1], s.size[2]),
+        };
+        var face = box.GetOrAddFace(CaptureFace.Front);
+        var jobs = CapturePlanner.PlanFace(CaptureFace.Front, s.size[0], s.size[1], s.size[2], s.maxPpu, s.levels, 0, 200);
+        foreach (var lodGroup in jobs.GroupBy(j => j.Level))
+        {
+            var first = lodGroup.First();
+            // The planner tags levels per box from 0; the fixture gives hand-placed detail boxes a higher global tag,
+            // which the exporters no longer write, so it is added here to keep comparing grids/pixel sizes exactly.
+            int tag = first.Level + s.tagOffset;
+            var lod = new LodMetadata { Level = tag, PixelsPerUnit = first.PixelsPerUnit, Cols = first.Cols, Rows = first.Rows, TilePixels = first.TilePixels };
+            foreach (var j in lodGroup)
+                lod.Images.Add(new ImageMetadata { Col = j.Col, Row = j.Row, PixelWidth = j.PixelWidth, PixelHeight = j.PixelHeight,
+                    Filename = $"{id}_Front_L{tag}_{j.Col}x{j.Row}.png" });
+            face.Lods.Add(lod);
+        }
+        built.Boxes.Add(box);
     }
-    built.Boxes.Add(box);
-}
 
-// Serialize under a decimal-comma culture to prove the output is culture-invariant
-var comma = (CultureInfo)CultureInfo.InvariantCulture.Clone();
-comma.NumberFormat = new NumberFormatInfo { NumberDecimalSeparator = ",", NumberGroupSeparator = "." };
-CultureInfo.CurrentCulture = comma;
-string json = CaptureMetadataJson.Serialize(built);
-CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "csharp-output.json"), json);
+    // Serialize under a decimal-comma culture to prove the output is culture-invariant
+    var comma = (CultureInfo)CultureInfo.InvariantCulture.Clone();
+    comma.NumberFormat = new NumberFormatInfo { NumberDecimalSeparator = ",", NumberGroupSeparator = "." };
+    CultureInfo.CurrentCulture = comma;
+    string json = CaptureMetadataJson.Serialize(built);
+    CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+    File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "csharp-output.json"), json);
 
-using var outDoc = JsonDocument.Parse(json);   // also proves it is valid JSON
+    using var outDoc = JsonDocument.Parse(json);   // also proves it is valid JSON
 
-// deep structural comparison: numbers compared with tolerance, everything else exactly
-bool Same(JsonElement a, JsonElement b, string path, List<string> diffs)
-{
-    if (a.ValueKind != b.ValueKind) { diffs.Add($"{path}: kind {a.ValueKind} vs {b.ValueKind}"); return false; }
-    switch (a.ValueKind)
+    // deep structural comparison: numbers compared with tolerance, everything else exactly
+    bool Same(JsonElement a, JsonElement b, string path, List<string> diffs)
     {
-        case JsonValueKind.Object:
-            var an = a.EnumerateObject().Select(p => p.Name).OrderBy(x => x).ToList();
-            var bn = b.EnumerateObject().Select(p => p.Name).OrderBy(x => x).ToList();
-            if (!an.SequenceEqual(bn)) { diffs.Add($"{path}: keys [{string.Join(",", an)}] vs [{string.Join(",", bn)}]"); return false; }
-            foreach (var n in an) Same(a.GetProperty(n), b.GetProperty(n), path + "." + n, diffs);
-            return diffs.Count == 0;
-        case JsonValueKind.Array:
-            if (a.GetArrayLength() != b.GetArrayLength()) { diffs.Add($"{path}: length {a.GetArrayLength()} vs {b.GetArrayLength()}"); return false; }
-            for (int i = 0; i < a.GetArrayLength(); i++) Same(a[i], b[i], $"{path}[{i}]", diffs);
-            return diffs.Count == 0;
-        case JsonValueKind.Number:
-            if (Math.Abs(a.GetDouble() - b.GetDouble()) > 1e-4) diffs.Add($"{path}: {a.GetDouble()} vs {b.GetDouble()}");
-            return diffs.Count == 0;
-        default:
-            if (a.ToString() != b.ToString()) diffs.Add($"{path}: '{a}' vs '{b}'");
-            return diffs.Count == 0;
+        if (a.ValueKind != b.ValueKind) { diffs.Add($"{path}: kind {a.ValueKind} vs {b.ValueKind}"); return false; }
+        switch (a.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var an = a.EnumerateObject().Select(p => p.Name).OrderBy(x => x).ToList();
+                var bn = b.EnumerateObject().Select(p => p.Name).OrderBy(x => x).ToList();
+                if (!an.SequenceEqual(bn)) { diffs.Add($"{path}: keys [{string.Join(",", an)}] vs [{string.Join(",", bn)}]"); return false; }
+                foreach (var n in an) Same(a.GetProperty(n), b.GetProperty(n), path + "." + n, diffs);
+                return diffs.Count == 0;
+            case JsonValueKind.Array:
+                if (a.GetArrayLength() != b.GetArrayLength()) { diffs.Add($"{path}: length {a.GetArrayLength()} vs {b.GetArrayLength()}"); return false; }
+                for (int i = 0; i < a.GetArrayLength(); i++) Same(a[i], b[i], $"{path}[{i}]", diffs);
+                return diffs.Count == 0;
+            case JsonValueKind.Number:
+                if (Math.Abs(a.GetDouble() - b.GetDouble()) > 1e-4) diffs.Add($"{path}: {a.GetDouble()} vs {b.GetDouble()}");
+                return diffs.Count == 0;
+            default:
+                if (a.ToString() != b.ToString()) diffs.Add($"{path}: '{a}' vs '{b}'");
+                return diffs.Count == 0;
+        }
     }
+    var diffs = new List<string>();
+    Same(demo, outDoc.RootElement, "$", diffs);
+    Check(diffs.Count == 0, "C# writer/planner output equals the JS demo dataset:\n  " + string.Join("\n  ", diffs.Take(15)));
 }
-var diffs = new List<string>();
-Same(demo, outDoc.RootElement, "$", diffs);
-Check(diffs.Count == 0, "C# writer/planner output equals the JS demo dataset:\n  " + string.Join("\n  ", diffs.Take(15)));
 
 // ── number formatting / escaping ────────────────────────────────────────
 Eq(CaptureMetadataJson.Num(-0.00001, 4), "0", "no negative zero");
