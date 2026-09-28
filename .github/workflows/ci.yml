@@ -1,0 +1,30 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+jobs:
+    capture-plan-check:
+        runs-on: ubuntu-latest
+        steps:
+            # Program.cs cross-checks against the dashboard's shared demo fixture by the same
+            # relative path a local `dotnet run` uses in the monorepo layout (Unity-AreaCapture/
+            # and Dashboard/ as siblings) — check out both repos into that same layout here.
+            - uses: actions/checkout@v4
+              with:
+                  path: Unity-AreaCapture
+
+            - uses: actions/checkout@v4
+              with:
+                  repository: open-game-analytics/oga-dashboard
+                  path: Dashboard/oga-dashboard
+
+            - uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: '8.0.x'
+
+            - name: Run CapturePlanCheck
+              working-directory: Unity-AreaCapture/Tests~/CapturePlanCheck
+              run: dotnet run
