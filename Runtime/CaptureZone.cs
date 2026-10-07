@@ -65,6 +65,11 @@ namespace AreaCapture
         [SerializeField]
         private bool useStrictClipping = true;
 
+        [Tooltip("Cut this many world units off the capture side of the box before rendering, like a section cut. Use it to slice away ceilings/roofs so the inside of rooms is visible (set it just thicker than the roof). Applies to every captured face; 0 disables.")]
+        [Min(0)]
+        [SerializeField]
+        private float depthTrim = 0f;
+
 #if NAUGHTY_ATTRIBUTES
         [HideIf(nameof(exportCubemap))]
 #endif
@@ -80,6 +85,7 @@ namespace AreaCapture
         public CaptureAxis Axis => captureAxis;
         public bool ExportCubemap => exportCubemap;
         public bool UseStrictClipping => useStrictClipping;
+        public float DepthTrim => Mathf.Max(0f, depthTrim);
         public string FilenameOverride { get => filenameOverride; set => filenameOverride = value; }
         public bool ShowGizmo { get => showGizmo; set => showGizmo = value; }
         public int PixelsPerUnitOverride => Mathf.Max(0, pixelsPerUnitOverride);

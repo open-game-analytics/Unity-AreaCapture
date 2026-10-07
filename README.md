@@ -115,6 +115,7 @@ Marks a volume for capture.
 - `Export Cubemap`: Toggle to export all six faces instead of one.
 - `Filename Override`: Optional custom name (box id and file prefix).
 - `Use Strict Clipping`: If enabled, only objects inside the volume are rendered.
+- `Depth Trim`: World units cut off the capture side of the box, like a section cut. Set it slightly thicker than a roof/ceiling to see inside rooms (0 = off).
 - `Pixel Per Unit Override`: Max-quality resolution for this zone (0 = use the window's Pixel Per Unit). The number of LoD levels is a window setting (see above).
 - `Show Gizmo`: Display the capture volume in the scene view (labelled with its name).
 

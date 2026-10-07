@@ -60,6 +60,7 @@ The metadata contract is documented in the dashboard repo: `Dashboard/docs/Captu
 - Zone axes come from the transform, sizes from `OrientedSize`, so a zone rotated about one axis is captured aligned to itself.
 - **Normal clipping**: near = 0.3, far = 1000
 - **Strict clipping**: near = 10, far = 10 + depth of zone along capture axis (clips to exact volume bounds)
+- **Depth trim** (`CaptureZone.DepthTrim`): when > 0, near = 10 + trim (clamped to the zone depth), a section cut that removes ceilings/roofs; applies in both clipping modes.
 - Level ppu: the finest level is the max ppu (zone override, else the window's Pixel Per Unit); level `k` steps down halve it. Level tags are per box, L0 = coarsest.
 - Every tile is `Tile Pixels` square (≤ `SystemInfo.maxTextureSize`) except the last column/row and levels smaller than one tile, which are cropped to the box (the camera frames exactly `pixel size / ppu` world units from the tile's top-left corner). A finer level replaces each tile with four; `LodMetadata.TilePixels` is written as `tile_size`.
 

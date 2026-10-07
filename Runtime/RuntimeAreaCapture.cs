@@ -126,6 +126,12 @@ namespace AreaCapture.Runtime
                 cam.farClipPlane = 1000f;
             }
 
+            // Depth trim: push the near plane inward from the face to cut off ceilings/roofs.
+            // Kept just short of the far plane so the camera never gets an inverted clip range.
+            float trim = Mathf.Min(zone.DepthTrim, depth);
+            if (trim > 0f)
+                cam.nearClipPlane = Mathf.Min(CameraStandoff + trim - 0.01f, cam.farClipPlane - 0.01f);
+
             RenderTexture rt = RenderTexture.GetTemporary(job.PixelWidth, job.PixelHeight, 24, RenderTextureFormat.ARGB32);
             Texture2D tex = null;
             try
