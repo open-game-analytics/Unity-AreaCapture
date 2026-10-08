@@ -76,6 +76,26 @@ namespace AreaCapture
         public List<BoxMetadata> Boxes = new List<BoxMetadata>();
 
         public void Clear() => Boxes.Clear();
+
+        /// <summary>
+        /// Leaves the named images out of the metadata (tiles that were skipped because they are empty), then drops
+        /// the levels, faces and boxes that no longer have any image. The grid of a level that stays is not touched:
+        /// a missing tile just means nothing is drawn there.
+        /// </summary>
+        public void RemoveImages(ICollection<string> filenames)
+        {
+            if (filenames.Count == 0) return;
+            foreach (BoxMetadata box in Boxes)
+            {
+                foreach (FaceMetadata face in box.Faces)
+                {
+                    foreach (LodMetadata lod in face.Lods) lod.Images.RemoveAll(i => filenames.Contains(i.Filename));
+                    face.Lods.RemoveAll(l => l.Images.Count == 0);
+                }
+                box.Faces.RemoveAll(f => f.Lods.Count == 0);
+            }
+            Boxes.RemoveAll(b => b.Faces.Count == 0);
+        }
     }
 
     /// <summary>Writes <see cref="CaptureMetadata"/> as schema v2 JSON. Always culture-invariant.</summary>

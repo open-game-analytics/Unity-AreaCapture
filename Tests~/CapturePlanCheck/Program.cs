@@ -209,5 +209,100 @@ for (int n = 0; n < 500; n++)
 Eq(notConstant, 0, "every tile but the last column/row is exactly the tile size (500 random inputs)");
 Eq(nesting, 0, "every tile lies inside the tile (col/2, row/2) of the level below it (500 random inputs)");
 
+// ── Empty tiles ──
+
+// A tile is empty when every alpha byte is 0, whatever the colour bytes hold (a 4x4 RGBA32 tile)
+var emptyTile = new byte[4 * 4 * 4];
+Check(TileCoverage.IsEmpty(emptyTile), "all-zero tile is empty");
+Array.Fill(emptyTile, (byte)200);
+for (int i = 3; i < emptyTile.Length; i += 4) emptyTile[i] = 0;
+Check(TileCoverage.IsEmpty(emptyTile), "colour with alpha 0 everywhere is still empty");
+emptyTile[emptyTile.Length - 1] = 1;
+Check(!TileCoverage.IsEmpty(emptyTile), "one pixel with alpha > 0 (the last byte) makes the tile non-empty");
+Check(TileCoverage.IsEmpty(ReadOnlySpan<byte>.Empty), "no pixels is empty");
+
+// Leaving skipped tiles out of the metadata drops their levels, faces and boxes when nothing is left
+static LodMetadata MakeLod(int level, params (int col, int row, string file)[] tiles)
+{
+    var lod = new LodMetadata { Level = level, PixelsPerUnit = 1 << level, Cols = 2, Rows = 1, TilePixels = 100 };
+    foreach (var (col, row, file) in tiles) lod.Images.Add(new ImageMetadata { Col = col, Row = row, Filename = file, PixelWidth = 100, PixelHeight = 100 });
+    return lod;
+}
+BoxMetadata MakeBox(string id, params LodMetadata[] lods)
+{
+    var box = new BoxMetadata { Id = id };
+    var face = box.GetOrAddFace(CaptureFace.Top);
+    face.Lods.AddRange(lods);
+    return box;
+}
+var pruned = new CaptureMetadata();
+pruned.Boxes.Add(MakeBox("A", MakeLod(0, (0, 0, "a0")), MakeLod(1, (0, 0, "a10"), (1, 0, "a11"))));
+pruned.Boxes.Add(MakeBox("Empty", MakeLod(0, (0, 0, "e0")), MakeLod(1, (0, 0, "e10"), (1, 0, "e11"))));
+pruned.RemoveImages(new HashSet<string> { "a10", "e0", "e10", "e11" });
+Eq(string.Join(",", pruned.Boxes.Select(b => b.Id)), "A", "a box whose tiles are all skipped is dropped");
+var prunedFace = pruned.Boxes[0].Faces[0];
+Eq(prunedFace.Lods.Count, 2, "levels that keep a tile stay");
+Eq(string.Join(",", prunedFace.Lods[1].Images.Select(i => i.Filename)), "a11", "only the skipped tile leaves its level");
+Eq(prunedFace.Lods[1].Cols, 2, "the grid of a level that stays is untouched");
+pruned.RemoveImages(new HashSet<string> { "a0" });
+Eq(prunedFace.Lods.Count, 1, "a level left without tiles is dropped");
+var untouched = new CaptureMetadata();
+untouched.Boxes.Add(MakeBox("A", MakeLod(0, (0, 0, "a0"))));
+untouched.RemoveImages(new HashSet<string>());
+Eq(untouched.Boxes.Count, 1, "nothing skipped changes nothing");
+
+// --- PngWriter: decode our own output (chunk CRCs, zlib/Adler32, row order) and compare with the input ---
+static byte[] DecodePng(byte[] png, out int width, out int height)
+{
+    var sig = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+    if (!png.Take(8).SequenceEqual(sig)) throw new Exception("bad signature");
+    int pos = 8; width = height = 0;
+    var idat = new MemoryStream();
+    while (pos < png.Length)
+    {
+        int len = (png[pos] << 24) | (png[pos + 1] << 16) | (png[pos + 2] << 8) | png[pos + 3];
+        string type = System.Text.Encoding.ASCII.GetString(png, pos + 4, 4);
+        uint crc = 0xFFFFFFFFu;
+        for (int i = pos + 4; i < pos + 8 + len; i++) { crc ^= png[i]; for (int k = 0; k < 8; k++) crc = (crc & 1) != 0 ? 0xEDB88320u ^ (crc >> 1) : crc >> 1; }
+        crc ^= 0xFFFFFFFFu;
+        uint expected = (uint)((png[pos + 8 + len] << 24) | (png[pos + 9 + len] << 16) | (png[pos + 10 + len] << 8) | png[pos + 11 + len]);
+        if (crc != expected) throw new Exception("bad CRC in " + type);
+        if (type == "IHDR") { width = (png[pos + 8] << 24) | (png[pos + 9] << 16) | (png[pos + 10] << 8) | png[pos + 11]; height = (png[pos + 12] << 24) | (png[pos + 13] << 16) | (png[pos + 14] << 8) | png[pos + 15]; }
+        if (type == "IDAT") idat.Write(png, pos + 8, len);
+        pos += 12 + len;
+    }
+    idat.Position = 0;
+    var raw = new MemoryStream();
+    using (var z = new System.IO.Compression.ZLibStream(idat, System.IO.Compression.CompressionMode.Decompress)) z.CopyTo(raw); // verifies Adler32
+    var rawBytes = raw.ToArray();
+    var pixels = new byte[width * height * 4];
+    for (int y = 0; y < height; y++)
+    {
+        if (rawBytes[y * (width * 4 + 1)] != 0) throw new Exception("unexpected filter");
+        Buffer.BlockCopy(rawBytes, y * (width * 4 + 1) + 1, pixels, y * width * 4, width * 4);
+    }
+    return pixels;
+}
+
+{
+    const int W = 37, H = 23; // odd sizes catch stride bugs
+    var pngRng = new Random(1);
+    var src = new byte[W * H * 4];
+    pngRng.NextBytes(src);
+    var top = DecodePng(PngWriter.EncodeRgba(src, W, H, bottomUp: false), out int pw, out int ph);
+    Check(pw == W && ph == H && top.SequenceEqual(src), "PNG round-trip, top-down");
+    var bottom = DecodePng(PngWriter.EncodeRgba(src, W, H, bottomUp: true), out _, out _);
+    bool flipped = true;
+    for (int y = 0; y < H && flipped; y++)
+        flipped = bottom.AsSpan(y * W * 4, W * 4).SequenceEqual(src.AsSpan((H - 1 - y) * W * 4, W * 4));
+    Check(flipped, "PNG round-trip, bottom-up input is flipped to top-down rows");
+    var bigPng = new byte[3000 * 2000 * 4]; // > one Adler32 block, mostly transparent like a real tile
+    for (int i = 0; i < bigPng.Length; i += 97) bigPng[i] = (byte)i;
+    Check(DecodePng(PngWriter.EncodeRgba(bigPng, 3000, 2000, false), out _, out _).SequenceEqual(bigPng), "PNG round-trip, large image");
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var sized = PngWriter.EncodeRgba(new byte[2048 * 2048 * 4], 2048, 2048, true);
+    Console.WriteLine($"(info) 2048x2048 empty tile: {sw.ElapsedMilliseconds} ms, {sized.Length} bytes");
+}
+
 Console.WriteLine($"{checks - failures}/{checks} checks passed");
 return failures == 0 ? 0 : 1;
