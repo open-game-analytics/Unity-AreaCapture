@@ -34,6 +34,7 @@ AreaCaptureWindow (UI, EditorPrefs persistence)
               └─ Internal orthographic Camera → RenderTexture → Texture2D
             TileCoverage.IsEmpty(texture)? skip (SkipEmptyTiles, default on) : File.WriteAllBytes(path, texture.EncodeToPNG())
        └─ metadata.RemoveImages(skipped) → CaptureMetadataJson.Serialize(metadata) → File.WriteAllText
+       └─ delete PNGs (+ .meta) an earlier export left under the skipped names
 ```
 
 The exporter runs asynchronously via `EditorApplication.update` (state machine over the precomputed job list) to keep the editor responsive and show a cancelable progress bar. With `ExportSettings.BackgroundEncoding` (default on) it renders several tiles per frame (50 ms budget) and hands each tile's raw pixels to `TileWriteQueue` (≤3 in flight), where the empty check, `PngWriter.EncodeRgba` (pure C#, thread-safe, unlike `EncodeToPNG`) and the file write run on the thread pool; the queue is drained before the metadata JSON is written. Off = the original one-tile-per-frame main-thread path. Only one export runs at a time (they share the GPU, the camera and the progress bar), and each finished export logs its timing to the Console.
@@ -52,7 +53,7 @@ The metadata contract is documented in the dashboard repo: `Dashboard/docs/Captu
 
 ### Testing without Unity
 
-`CapturePlan.cs`, `CaptureMetadata.cs` and `TileCoverage.cs` compile without UnityEngine. `Tests~/CapturePlanCheck` compiles them into a plain .NET console app (`nix shell nixpkgs#dotnet-sdk_8 --command dotnet run`) to test the planner, the JSON writer and the empty-tile rule (the tile grid and JSON for the shared demo dataset in `Dashboard/oga-dashboard/tests/fixtures/capture-lod-demo/` must match the dashboard generator's output).
+`CapturePlan.cs`, `CaptureMetadata.cs`, `TileCoverage.cs` and `PngWriter.cs` compile without UnityEngine. `Tests~/CapturePlanCheck` compiles them into a plain .NET console app (`nix shell nixpkgs#dotnet-sdk_8 --command dotnet run`) to test the planner, the JSON writer, the empty-tile rule and the PNG encoder (the tile grid and JSON for the shared demo dataset in `Dashboard/oga-dashboard/tests/fixtures/capture-lod-demo/` must match the dashboard generator's output).
 
 ### Camera setup (RuntimeAreaCapture)
 

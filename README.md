@@ -40,6 +40,9 @@ Go to **Window > Area Capture** in the Unity Editor menu.
 - **Pixel Per Unit**: Maximum quality — resolution density of the finest exported image.
 - **Lod Levels** (default 4): How many resolutions to export. The finest is Pixel Per Unit; every further level is half the resolution of the previous one.
 - **Min Level Pixels** (default 256): Degraded levels whose whole image would be smaller than this are skipped.
+- **Tile Pixels** (default 1024): Pixel size of every tile of every level (limited to the GPU texture size).
+- **Skip Empty Tiles** (default on): Tiles in which nothing was rendered (fully transparent) are not saved and are left out of the metadata; a level, face or box left without any tile is dropped. A PNG an earlier export left under such a tile's name is deleted once the new metadata is written. Needs a transparent Background Color: with an opaque one no tile is empty. The OGA dashboard draws nothing where a tile is missing.
+- **Background Encoding** (default on): Encodes and writes the PNGs on worker threads while the next tile renders, several tiles per editor frame; the Console logs the timing of every export. Turn it off for the original one-tile-per-frame behaviour.
 - **Output Directory**: Where to save the exported files.
 - **Metadata Filename**: Name of the JSON metadata file.
 
@@ -84,6 +87,7 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 - `size` is the box's **oriented** size (collider size × scale), and `position` its world centre.
 - Files are named `{Name}_{Face}_L{level}_{col}x{row}.png`; `row` 0 is the top of the box.
 - Every level is cut into tiles of one constant size, **Tile Pixels** (default 1024), anchored at the top-left corner of the box: `tile_size` in the metadata. Only the last column/row of tiles (and a level smaller than one tile) is cropped to the box.
+- With **Skip Empty Tiles** a level lists only the tiles in which something was rendered, so `images` can hold fewer than `columns × rows` entries.
 
 ## Levels of detail
 
@@ -91,7 +95,7 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 
 **Min Level Pixels** prevents tiny textures: a degraded level is skipped when the longest edge of its whole image would be below this size, so a small zone gets fewer levels than a large one. The finest level is always exported.
 
-A zone can set its own **Pixel Per Unit Override** (its max quality) — e.g. for a hand-placed detail area inside a bigger zone. Zones can overlap and be placed, sized and rotated freely. Note: level tags are per box (every box starts at `L0`).
+A zone can set its own **Pixel Per Unit Override** (its max quality) — e.g. for a hand-placed detail area inside a bigger zone. Zones can overlap and be placed, sized and rotated freely. Note: level tags are per box (every box starts at `L0`, unless Skip Empty Tiles dropped its coarsest levels because nothing showed at their resolution).
 
 **Rotation:** a zone may be rotated about **one** world axis. Only the faces looking along that axis are exported (rotation about Y → `Top`/`Bottom`, Z → `Front`/`Back`, X → `Left`/`Right`); a zone tilted about several axes is skipped with a warning.
 
