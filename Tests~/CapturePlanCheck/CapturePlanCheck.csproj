@@ -11,5 +11,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="../../Runtime/CapturePlan.cs" />
     <Compile Include="../../Runtime/CaptureMetadata.cs" />
+    <Compile Include="../../Runtime/TileCoverage.cs" />
+    <Compile Include="../../Runtime/PngWriter.cs" />
   </ItemGroup>
 </Project>
