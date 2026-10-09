@@ -11,6 +11,8 @@ You can add this package to your Unity project using the Unity Package Manager v
 3. Select **"Add package from git URL..."**.
 4. Enter the URL of this repository.
 
+Optional: [NaughtyAttributes](https://github.com/dbrizov/NaughtyAttributes) adds a few inspector attributes to `CaptureZone`. The package works the same without it; to use it, install it as a UPM package in your project (add `"com.dbrizov.naughtyattributes": "https://github.com/dbrizov/NaughtyAttributes.git#upm"` to `Packages/manifest.json`, or use its OpenUPM package). It is not listed as a dependency of this package, because UPM accepts only semver versions there.
+
 ## Features
 
 - **CaptureZone Component**: Mark areas for capture by adding this component to GameObjects with a BoxCollider.

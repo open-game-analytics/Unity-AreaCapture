@@ -12,7 +12,11 @@ This is a Unity package with no CLI build system. Development happens inside a U
 
 To install locally during development: add the package via **Package Manager > Add package from disk** and point to `package.json`, or use the git URL.
 
+<<<<<<< HEAD
+Optional dependency: **NaughtyAttributes** (`com.dbrizov.naughtyattributes`) — detected at compile time via `NAUGHTY_ATTRIBUTES` scripting define in the runtime asmdef. Code using NaughtyAttributes attributes must be wrapped in `#if NAUGHTY_ATTRIBUTES` guards. It is deliberately **not** listed in `package.json` `dependencies` (UPM accepts only semver versions in a package's `dependencies`, so a git URL there breaks package resolution in any project that does not list NaughtyAttributes itself); add `"com.dbrizov.naughtyattributes": "https://github.com/dbrizov/NaughtyAttributes.git#upm"` (or the OpenUPM package) to the consuming project's `Packages/manifest.json` instead.
+=======
 Optional dependency: **NaughtyAttributes** (`com.dbrizov.naughtyattributes`) — detected at compile time via `NAUGHTY_ATTRIBUTES` scripting define in the runtime asmdef. Code using NaughtyAttributes attributes must be wrapped in `#if NAUGHTY_ATTRIBUTES` guards. It is deliberately **not** listed in `package.json` `dependencies` (UPM rejects git-URL dependencies there, which breaks `file:` installs); add `"com.dbrizov.naughtyattributes": "https://github.com/dbrizov/NaughtyAttributes.git#upm"` to the consuming project's `manifest.json` instead.
+>>>>>>> main
 
 ## Architecture
 
