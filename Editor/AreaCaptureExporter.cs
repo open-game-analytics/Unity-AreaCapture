@@ -19,22 +19,40 @@ namespace AreaCapture.Editor
         internal const string PREF_KEY_BGCOLOR    = "AreaCapture_BGColor";
         internal const string PREF_KEY_CULLMASK   = "AreaCapture_CullMask";
         internal const string PREF_KEY_TILE       = "AreaCapture_TilePixels";
-        internal const string PREF_KEY_LODLEVELS  = "AreaCapture_LodLevels";
-        internal const string PREF_KEY_MINLEVEL   = "AreaCapture_MinLevelPixels";
+        internal const string PREF_KEY_MINPPU     = "AreaCapture_MinPPU";
+        internal const string PREF_KEY_EXTREMES   = "AreaCapture_ExtremesOnly";
         internal const string PREF_KEY_SKIPEMPTY  = "AreaCapture_SkipEmptyTiles";
         internal const string PREF_KEY_BGENCODE   = "AreaCapture_BackgroundEncoding";
+
+        /// <summary>The trailing "~" makes Unity's AssetDatabase skip the folder: no import, no .meta files.</summary>
+        internal const string DEFAULT_OUTDIR = "Assets/Exports~/AreaCaptures";
+
+        /// <summary>
+        /// True when Unity would import files in <paramref name="dir"/>: it lies under Assets/ or Packages/
+        /// and no path segment ends with "~" or starts with "." (the folders the AssetDatabase ignores).
+        /// </summary>
+        public static bool WouldBeImportedByUnity(string dir)
+        {
+            if (string.IsNullOrEmpty(dir)) return false;
+            string[] parts = dir.Replace('\\', '/').Split(new[] { '/' }, System.StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0 || (parts[0] != "Assets" && parts[0] != "Packages")) return false;
+            foreach (string part in parts)
+                if (part.EndsWith("~") || part.StartsWith(".")) return false;
+            return true;
+        }
+
         public static ExportSettings LoadSettingsFromPrefs()
         {
             var s = new ExportSettings
             {
                 PixelPerUnit     = EditorPrefs.GetInt(PREF_KEY_PPU, 100),
-                OutputDirectory  = EditorPrefs.GetString(PREF_KEY_OUTDIR, "Assets/Exports/AreaCaptures"),
+                OutputDirectory  = EditorPrefs.GetString(PREF_KEY_OUTDIR, DEFAULT_OUTDIR),
                 MetadataFilename = EditorPrefs.GetString(PREF_KEY_META, "capture_metadata.json"),
                 ClearFlags       = (CameraClearFlags)EditorPrefs.GetInt(PREF_KEY_CLEARFLAG, (int)CameraClearFlags.SolidColor),
                 CullingMask      = EditorPrefs.GetInt(PREF_KEY_CULLMASK, -1),
                 TilePixels    = EditorPrefs.GetInt(PREF_KEY_TILE, CapturePlanner.DefaultTilePixels),
-                LodLevels        = EditorPrefs.GetInt(PREF_KEY_LODLEVELS, CapturePlanner.DefaultLodLevels),
-                MinLevelPixels   = EditorPrefs.GetInt(PREF_KEY_MINLEVEL, CapturePlanner.DefaultMinLevelPixels),
+                MinPixelPerUnit  = EditorPrefs.GetFloat(PREF_KEY_MINPPU, CapturePlanner.DefaultMinPixelsPerUnit),
+                ExtremesOnly     = EditorPrefs.GetInt(PREF_KEY_EXTREMES, 0) != 0,
                 SkipEmptyTiles   = EditorPrefs.GetInt(PREF_KEY_SKIPEMPTY, 1) != 0,
                 BackgroundEncoding = EditorPrefs.GetInt(PREF_KEY_BGENCODE, 1) != 0,
             };
@@ -62,11 +80,15 @@ namespace AreaCapture.Editor
             /// <summary>Largest PNG edge in pixels. Bigger areas are split into tiles instead of failing.</summary>
             public int TilePixels = CapturePlanner.DefaultTilePixels;
 
-            /// <summary>Levels of detail per face: the finest is <see cref="PixelPerUnit"/>, each further one halves it.</summary>
-            public int LodLevels = CapturePlanner.DefaultLodLevels;
+            /// <summary>
+            /// Lowest resolution a LoD level may have (0 = no floor). Levels start at <see cref="PixelPerUnit"/> and halve
+            /// until a level's whole image fits in one tile or the next one would fall below this, so the number of
+            /// levels follows from the box size and this range.
+            /// </summary>
+            public float MinPixelPerUnit = CapturePlanner.DefaultMinPixelsPerUnit;
 
-            /// <summary>A degraded level whose whole image would be shorter than this (longest edge, px) is not exported.</summary>
-            public int MinLevelPixels = CapturePlanner.DefaultMinLevelPixels;
+            /// <summary>Export only the coarsest (overview) and the finest level, a fast preview of worst and best LoD.</summary>
+            public bool ExtremesOnly;
 
             /// <summary>
             /// Do not write tiles that are fully transparent (nothing was rendered there) and leave them out of the
@@ -154,7 +176,7 @@ namespace AreaCapture.Editor
             {
                 if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
                 return CapturePlanner.LevelPixelsPerUnit(face, size.x, size.y, size.z,
-                    EffectivePixelsPerUnit(zone, settings), settings.LodLevels, settings.MinLevelPixels);
+                    EffectivePixelsPerUnit(zone, settings), settings.MinPixelPerUnit, EffectiveTilePixels(settings));
             }
             return new List<double>();
         }
@@ -176,7 +198,7 @@ namespace AreaCapture.Editor
             foreach (CaptureFace face in zone.FacesToExport())
             {
                 if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
-                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, tilePixels);
+                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, maxPpu, settings.MinPixelPerUnit, tilePixels, settings.ExtremesOnly);
             }
             return total;
         }
@@ -235,7 +257,7 @@ namespace AreaCapture.Editor
 
                     FaceMetadata faceMeta = box.GetOrAddFace(face);
                     LodMetadata lod = null;
-                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, tilePixels))
+                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, maxPpu, settings.MinPixelPerUnit, tilePixels, settings.ExtremesOnly))
                     {
                         if (lod == null || lod.Level != tile.Level)
                         {

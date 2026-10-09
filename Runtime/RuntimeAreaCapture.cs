@@ -170,8 +170,8 @@ namespace AreaCapture.Runtime
             CaptureFace face = (axisOverride ?? captureZone.Axis).ToFace();
             Vector3 size = captureZone.OrientedSize;
 
-            // A single level with a tile budget so large that the whole face is one tile
-            List<TileJob> jobs = CapturePlanner.PlanFace(face, size.x, size.y, size.z, pixelPerUnit, 1, 0, int.MaxValue);
+            // A tile budget so large that the whole face is one tile, which makes the ladder a single level
+            List<TileJob> jobs = CapturePlanner.PlanFace(face, size.x, size.y, size.z, pixelPerUnit, 0, int.MaxValue);
             return CaptureTile(captureZone, jobs[0], clearFlags, backgroundColor, cullingMask);
         }
 

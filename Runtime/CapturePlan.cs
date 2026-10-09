@@ -62,11 +62,8 @@ namespace AreaCapture
         /// <summary>More levels than this (each halves the resolution) would be below any useful size.</summary>
         public const int MaxLodLevels = 32;
 
-        /// <summary>Default for the smallest image edge a degraded LoD level may have; smaller levels are dropped.</summary>
-        public const int DefaultMinLevelPixels = 256;
-
-        /// <summary>Default number of LoD levels per face.</summary>
-        public const int DefaultLodLevels = 4;
+        /// <summary>Default lowest resolution (pixels per unit) a LoD level may have; 0 = no floor.</summary>
+        public const int DefaultMinPixelsPerUnit = 0;
 
         private const double GridEpsilon = 1e-6;
 
@@ -139,48 +136,71 @@ namespace AreaCapture
         /// <summary>
         /// Pixels per unit of every LoD level of an image <paramref name="widthUnits"/> × <paramref name="heightUnits"/>,
         /// coarsest first, so the list index is the level tag. The finest level is <paramref name="maxPixelsPerUnit"/>;
-        /// each further level halves it. A degraded level whose whole image would be shorter than
-        /// <paramref name="minLevelPixels"/> on its longest edge is dropped; the finest level is always kept.
+        /// each further level halves it until the whole image fits in a single <paramref name="tilePixels"/> tile (that
+        /// level is the overview and the last one) or the next level would drop below <paramref name="minPixelsPerUnit"/>.
+        /// The finest level is always kept, so the level count follows from the box size and the resolution range.
         /// </summary>
         public static List<double> LevelPixelsPerUnit(float widthUnits, float heightUnits, double maxPixelsPerUnit,
-            int levelCount, int minLevelPixels)
+            double minPixelsPerUnit, int tilePixels)
         {
-            levelCount = Math.Max(1, Math.Min(levelCount, MaxLodLevels));
-            double longestUnits = Math.Max(widthUnits, heightUnits);
+            tilePixels = Math.Max(1, tilePixels);
+            int finestW = FinestPixels(widthUnits, maxPixelsPerUnit);
+            int finestH = FinestPixels(heightUnits, maxPixelsPerUnit);
 
             var ppus = new List<double>();
-            for (int i = 0; i < levelCount; i++)
+            for (int k = 0; k < MaxLodLevels; k++)
             {
-                double ppu = maxPixelsPerUnit / Math.Pow(2, i);
-                if (i > 0 && longestUnits * ppu < minLevelPixels) break; // only gets smaller from here
+                double ppu = maxPixelsPerUnit / Math.Pow(2, k);
+                if (k > 0 && ppu < minPixelsPerUnit * (1 - 1e-9)) break; // only gets lower from here
                 ppus.Add(ppu);
+                if (LevelPixels(finestW, k) <= tilePixels && LevelPixels(finestH, k) <= tilePixels) break; // whole image in one tile
             }
             ppus.Reverse();
             return ppus;
         }
 
-        /// <summary><see cref="LevelPixelsPerUnit(float, float, double, int, int)"/> for a face of a box of the given local size.</summary>
+        /// <summary><see cref="LevelPixelsPerUnit(float, float, double, double, int)"/> for a face of a box of the given local size.</summary>
         public static List<double> LevelPixelsPerUnit(CaptureFace face, float sizeX, float sizeY, float sizeZ,
-            double maxPixelsPerUnit, int levelCount, int minLevelPixels)
+            double maxPixelsPerUnit, double minPixelsPerUnit, int tilePixels)
         {
             FaceExtents(face, sizeX, sizeY, sizeZ, out float width, out float height);
-            return LevelPixelsPerUnit(width, height, maxPixelsPerUnit, levelCount, minLevelPixels);
+            return LevelPixelsPerUnit(width, height, maxPixelsPerUnit, minPixelsPerUnit, tilePixels);
+        }
+
+        /// <summary>
+        /// The level tags to export out of a ladder of <paramref name="levelCount"/> levels: all of them, or with
+        /// <paramref name="extremesOnly"/> just the overview (0) and the finest, a quick look at the worst and best LoD.
+        /// Tags keep their value from the full ladder, so a later full export fills in the gap.
+        /// </summary>
+        public static List<int> LevelTags(int levelCount, bool extremesOnly)
+        {
+            var tags = new List<int>();
+            if (extremesOnly && levelCount > 2)
+            {
+                tags.Add(0);
+                tags.Add(levelCount - 1);
+            }
+            else
+            {
+                for (int i = 0; i < levelCount; i++) tags.Add(i);
+            }
+            return tags;
         }
 
         /// <summary>Number of tiles <see cref="PlanFace"/> would produce, without building them. Cheap enough for UI repaints.</summary>
         public static int CountTiles(CaptureFace face, float sizeX, float sizeY, float sizeZ,
-            float maxPixelsPerUnit, int levelCount, int minLevelPixels, int tilePixels)
+            float maxPixelsPerUnit, double minPixelsPerUnit, int tilePixels, bool extremesOnly = false)
         {
             if (maxPixelsPerUnit <= 0f || tilePixels < 1) return 0;
 
             FaceExtents(face, sizeX, sizeY, sizeZ, out float width, out float height);
 
-            List<double> levelPpus = LevelPixelsPerUnit(width, height, maxPixelsPerUnit, levelCount, minLevelPixels);
+            List<double> levelPpus = LevelPixelsPerUnit(width, height, maxPixelsPerUnit, minPixelsPerUnit, tilePixels);
             int finestW = FinestPixels(width, maxPixelsPerUnit);
             int finestH = FinestPixels(height, maxPixelsPerUnit);
 
             int total = 0;
-            for (int i = 0; i < levelPpus.Count; i++)
+            foreach (int i in LevelTags(levelPpus.Count, extremesOnly))
             {
                 int steps = levelPpus.Count - 1 - i;
                 GridFor(LevelPixels(finestW, steps), LevelPixels(finestH, steps), tilePixels, out int cols, out int rows);
@@ -191,8 +211,9 @@ namespace AreaCapture
 
         /// <summary>
         /// Tiles of every LoD level of one face. <paramref name="maxPixelsPerUnit"/> is the finest level's resolution;
-        /// see <see cref="LevelPixelsPerUnit(float, float, double, int, int)"/> for the coarser ones. Levels are tagged
-        /// from 0 (coarsest) upward, so a higher tag is always more detail. Order: level, then row, then column.
+        /// see <see cref="LevelPixelsPerUnit(float, float, double, double, int)"/> for the coarser ones. Levels are tagged
+        /// from 0 (coarsest) upward, so a higher tag is always more detail; with <paramref name="extremesOnly"/> only the
+        /// coarsest and finest levels are planned (see <see cref="LevelTags"/>). Order: level, then row, then column.
         /// <para>
         /// Every tile is <paramref name="tilePixels"/> square, anchored at the face's top-left corner; only the last
         /// column/row (and a level smaller than one tile) is cropped to the face. Adjacent levels differ by a factor
@@ -202,19 +223,19 @@ namespace AreaCapture
         /// </para>
         /// </summary>
         public static List<TileJob> PlanFace(CaptureFace face, float sizeX, float sizeY, float sizeZ,
-            float maxPixelsPerUnit, int levelCount, int minLevelPixels, int tilePixels)
+            float maxPixelsPerUnit, double minPixelsPerUnit, int tilePixels, bool extremesOnly = false)
         {
             if (maxPixelsPerUnit <= 0f) throw new ArgumentOutOfRangeException(nameof(maxPixelsPerUnit), "Pixels per unit must be positive.");
             if (tilePixels < 1) throw new ArgumentOutOfRangeException(nameof(tilePixels));
 
             FaceExtents(face, sizeX, sizeY, sizeZ, out float width, out float height);
-            List<double> levelPpus = LevelPixelsPerUnit(width, height, maxPixelsPerUnit, levelCount, minLevelPixels);
+            List<double> levelPpus = LevelPixelsPerUnit(width, height, maxPixelsPerUnit, minPixelsPerUnit, tilePixels);
 
             int finestW = FinestPixels(width, maxPixelsPerUnit);
             int finestH = FinestPixels(height, maxPixelsPerUnit);
 
             var jobs = new List<TileJob>();
-            for (int i = 0; i < levelPpus.Count; i++)
+            foreach (int i in LevelTags(levelPpus.Count, extremesOnly))
             {
                 double ppu = levelPpus[i];
                 int steps = levelPpus.Count - 1 - i;

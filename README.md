@@ -37,10 +37,10 @@ Go to **Window > Area Capture** in the Unity Editor menu.
 
 ### Step 3: Configure Export Settings
 
-- **Pixel Per Unit**: Maximum quality — resolution density of the finest exported image.
-- **Lod Levels** (default 4): How many resolutions to export. The finest is Pixel Per Unit; every further level is half the resolution of the previous one.
-- **Min Level Pixels** (default 256): Degraded levels whose whole image would be smaller than this are skipped.
-- **Output Directory**: Where to save the exported files.
+- **Max Pixel Per Unit**: Maximum quality — resolution density of the finest exported image. The LoD levels below it are derived automatically.
+- **Min Pixel Per Unit** (default 0 = no floor): The lowest resolution a LoD level may have. The ladder halves the resolution from the max until a level's whole image fits in one tile (that is the overview) or the next level would fall below this.
+- **Overview + Best Only** (default off): Export just the coarsest and the finest level of every face — a fast preview of the worst and best LoD. Level numbers stay the real ones, so a full export later fills in the rest.
+- **Output Directory**: Where to save the exported files (default `Assets/Exports~/AreaCaptures`). Unity ignores folders ending in `~`, so the PNGs are not imported (no `.meta` files, no import time); the window warns if you pick a folder Unity would import. A path outside the project works too.
 - **Metadata Filename**: Name of the JSON metadata file.
 
 ### Step 4: Export
@@ -87,9 +87,9 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 
 ## Levels of detail
 
-**Pixel Per Unit** is the maximum quality. **Lod Levels** (a setting of the Area Capture window, applied to every zone) adds smaller versions below it: the finest level renders at `Pixel Per Unit`, and each further level at half the resolution of the one before. With 4 levels at 100 ppu that is 12.5 / 25 / 50 / 100 ppu. Levels are tagged from `L0` (coarsest) up to the finest, and each is cut into tiles of the same pixel size (**Tile Pixels**), so a finer level replaces one tile with four and every tile costs the same to load and stream. A viewer (the OGA dashboard) picks the level that matches its zoom.
+**Max Pixel Per Unit** is the maximum quality, and the program derives the smaller versions below it (applied to every zone): the finest level renders at the max, and each further level at half the resolution of the one before, until the whole image of a level fits in a single tile (**Tile Pixels**), which is the overview and the last (coarsest) level. A 20 × 10 unit zone at 100 ppu with 512 px tiles gets 25 / 50 / 100 ppu. Levels are tagged from `L0` (coarsest) up to the finest, and each is cut into tiles of the same pixel size, so a finer level replaces one tile with four and every tile costs the same to load and stream. A viewer (the OGA dashboard) picks the level that matches its zoom.
 
-**Min Level Pixels** prevents tiny textures: a degraded level is skipped when the longest edge of its whole image would be below this size, so a small zone gets fewer levels than a large one. The finest level is always exported.
+**Min Pixel Per Unit** sets a floor: the ladder stops before going below it, even if the box does not fit one tile yet, so no needlessly low-resolution textures are written. The finest level is always exported, so a small zone gets fewer levels than a large one.
 
 A zone can set its own **Pixel Per Unit Override** (its max quality) — e.g. for a hand-placed detail area inside a bigger zone. Zones can overlap and be placed, sized and rotated freely. Note: level tags are per box (every box starts at `L0`).
 
@@ -116,12 +116,12 @@ Marks a volume for capture.
 - `Filename Override`: Optional custom name (box id and file prefix).
 - `Use Strict Clipping`: If enabled, only objects inside the volume are rendered.
 - `Depth Trim`: World units cut off the capture side of the box, like a section cut. Set it slightly thicker than a roof/ceiling to see inside rooms (0 = off).
-- `Pixel Per Unit Override`: Max-quality resolution for this zone (0 = use the window's Pixel Per Unit). The number of LoD levels is a window setting (see above).
+- `Pixel Per Unit Override`: Max-quality resolution for this zone (0 = use the window's Pixel Per Unit). The LoD levels are derived from the window's Min Pixel Per Unit and Tile Pixels (see above).
 - `Show Gizmo`: Display the capture volume in the scene view (labelled with its name).
 
 ## Tips
 
-- **Better Quality**: Increase "Pixel Per Unit" (the maximum). "Lod Levels" only adds smaller versions below it.
+- **Better Quality**: Increase "Max Pixel Per Unit". The levels below it are derived and only add smaller versions.
 - **Large Areas**: No need to lower the resolution — areas larger than one tile are tiled automatically; "Tile Pixels" (default 1024) sets the size of every tile, smaller tiles stream in finer steps but mean more files.
 - **Filenames**: Use the "Filename Override" in the CaptureZone inspector for specific naming requirements.
 - **Selective Export**: Use the checkboxes in the Area Capture window to only re-export changed areas.
