@@ -34,8 +34,10 @@ namespace AreaCapture.Editor
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_CULLMASK, settings.CullingMask);
                 EditorPrefs.SetString(AreaCaptureExporter.PREF_KEY_BGCOLOR, "#" + ColorUtility.ToHtmlStringRGBA(settings.BackgroundColor));
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_TILE, settings.TilePixels);
-                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_LODLEVELS, settings.LodLevels);
-                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_MINLEVEL, settings.MinLevelPixels);
+                EditorPrefs.SetFloat(AreaCaptureExporter.PREF_KEY_MINPPU, settings.MinPixelPerUnit);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_EXTREMES, settings.ExtremesOnly ? 1 : 0);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_SKIPEMPTY, settings.SkipEmptyTiles ? 1 : 0);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_BGENCODE, settings.BackgroundEncoding ? 1 : 0);
             }
         }
 
@@ -49,11 +51,20 @@ namespace AreaCapture.Editor
             EditorGUILayout.Space();
 
             GUILayout.Label("Capture Settings", EditorStyles.boldLabel);
-            settings.PixelPerUnit = EditorGUILayout.IntField(new GUIContent("Pixel Per Unit", "Maximum quality: pixels per world unit of the finest LoD level (a zone can override it). A 1-unit zone at 100 PPU produces a 100×100 px image. Higher values = sharper output and larger files."), settings.PixelPerUnit);
-            settings.LodLevels = EditorGUILayout.IntSlider(new GUIContent("Lod Levels", "How many resolutions to export per face. The finest is Pixel Per Unit; each further level is half the resolution of the one before, so a viewer can load smaller images while zoomed out. 1 = only the maximum quality."), settings.LodLevels, 1, CapturePlanner.MaxLodLevels);
-            settings.MinLevelPixels = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Min Level Pixels", "Degraded levels whose whole image would be smaller than this (longest edge, in pixels) are not exported, so no tiny textures. The maximum quality level is always exported. 0 = no limit."), settings.MinLevelPixels));
+            settings.PixelPerUnit = EditorGUILayout.IntField(new GUIContent("Max Pixel Per Unit", "Maximum quality: pixels per world unit of the finest LoD level (a zone can override it). A 1-unit zone at 100 PPU produces a 100×100 px image. Higher values = sharper output and larger files. The LoD levels below it are derived: each halves the resolution until a level's whole image fits in one tile (or Min Pixel Per Unit is reached)."), settings.PixelPerUnit);
+            settings.MinPixelPerUnit = Mathf.Clamp(EditorGUILayout.FloatField(new GUIContent("Min Pixel Per Unit", "Lowest resolution a LoD level may have: the ladder stops before going below it, even if the whole box would not yet fit in one tile. The maximum quality level is always exported. 0 = no floor."), settings.MinPixelPerUnit), 0f, Mathf.Max(1, settings.PixelPerUnit));
             settings.TilePixels = EditorGUILayout.IntField(new GUIContent("Tile Pixels", $"Pixel size of every tile of every level: each level is cut into tiles this big, so a finer level replaces one tile with four. Tiles on the right/bottom edge and levels smaller than one tile are cropped. Limited to the GPU texture size ({SystemInfo.maxTextureSize})."), settings.TilePixels);
             settings.TilePixels = Mathf.Clamp(settings.TilePixels, 64, SystemInfo.maxTextureSize);
+            settings.SkipEmptyTiles = EditorGUILayout.Toggle(new GUIContent("Skip Empty Tiles", "Do not save tiles that are fully transparent (nothing was rendered there) and leave them out of the metadata, so empty parts of a box take no disk space. Needs a transparent background: with an opaque Background Color no tile is empty."), settings.SkipEmptyTiles);
+            settings.BackgroundEncoding = EditorGUILayout.Toggle(new GUIContent("Background Encoding", "Encode and write the PNGs on worker threads while the next tile renders, and render several tiles per editor frame. Faster; the Console logs the timing of every export. Turn off for the original one-tile-per-frame behaviour (e.g. to compare speed)."), settings.BackgroundEncoding);
+
+            EditorGUILayout.Space();
+
+            GUILayout.Label("Processing", EditorStyles.boldLabel);
+            EditorGUILayout.BeginHorizontal();
+            settings.SkipEmptyTiles = EditorGUILayout.ToggleLeft(new GUIContent("Skip Empty Tiles", "Do not save tiles that are fully transparent (nothing was rendered there) and leave them out of the metadata, so empty parts of a box take no disk space. Needs a transparent background: with an opaque Background Color no tile is empty."), settings.SkipEmptyTiles);
+            settings.BackgroundEncoding = EditorGUILayout.ToggleLeft(new GUIContent("Background Encoding", "Encode and write the PNGs on worker threads while the next tile renders, and render several tiles per editor frame. Faster; the Console logs the timing of every export. Turn off for the original one-tile-per-frame behaviour (e.g. to compare speed)."), settings.BackgroundEncoding);
+            EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space();
 
@@ -73,21 +84,35 @@ namespace AreaCapture.Editor
             EditorGUILayout.Space();
 
             GUILayout.Label("Export Settings", EditorStyles.boldLabel);
-            settings.OutputDirectory = EditorGUILayout.TextField(new GUIContent("Output Directory", "Folder where exported PNG files are saved."), settings.OutputDirectory);
+            settings.OutputDirectory = EditorGUILayout.TextField(new GUIContent("Output Directory", "Folder where exported PNG files are saved. A folder ending in '~' (or outside the project) is ignored by Unity's AssetDatabase, so the files are not imported."), settings.OutputDirectory);
             if (GUILayout.Button("Browse..."))
             {
                 string selectedPath = EditorUtility.OpenFolderPanel("Select Export Directory", "Assets", "");
                 if (!string.IsNullOrEmpty(selectedPath))
                 {
-                    // Convert to relative path
-                    if (selectedPath.StartsWith(Application.dataPath))
-                    {
-                        settings.OutputDirectory = "Assets" + selectedPath.Substring(Application.dataPath.Length);
-                    }
+                    // Project-relative inside the project, absolute outside it (which Unity never imports)
+                    string projectRoot = System.IO.Path.GetDirectoryName(Application.dataPath).Replace('\\', '/');
+                    settings.OutputDirectory = selectedPath.StartsWith(projectRoot + "/")
+                        ? selectedPath.Substring(projectRoot.Length + 1)
+                        : selectedPath;
                 }
             }
 
+            if (AreaCaptureExporter.WouldBeImportedByUnity(settings.OutputDirectory))
+            {
+                EditorGUILayout.HelpBox(
+                    "Unity will import every exported PNG (slow for many tiles). End a folder name with '~' " +
+                    "(e.g. Assets/Exports~/AreaCaptures) or export outside the project so the AssetDatabase ignores it.",
+                    MessageType.Warning);
+                if (GUILayout.Button("Use " + AreaCaptureExporter.DEFAULT_OUTDIR))
+                    settings.OutputDirectory = AreaCaptureExporter.DEFAULT_OUTDIR;
+            }
+
             settings.MetadataFilename = EditorGUILayout.TextField(new GUIContent("Metadata Filename", "Name of the JSON file written alongside images. Contains world position, size, and rotation for each captured zone."), settings.MetadataFilename);
+
+            EditorGUILayout.Space();
+
+            settings.ExtremesOnly = EditorGUILayout.Toggle(new GUIContent("Overview + Best Only", "Export only the coarsest (overview) and the finest level of each face, a fast preview of the worst and best LoD. Levels keep their real numbers, so a full export later fills in the ones in between."), settings.ExtremesOnly);
 
             EditorGUILayout.Space();
 
@@ -144,7 +169,8 @@ namespace AreaCapture.Editor
                     int imageCount = AreaCaptureExporter.CountImages(zone, settings);
                     string levels = ladder.Count == 0 ? "no LoD" : ladder.Count == 1
                         ? $"L0 {ladder[0]:0.##} ppu"
-                        : $"L0–L{ladder.Count - 1} {ladder[0]:0.##}–{ladder[ladder.Count - 1]:0.##} ppu";
+                        : $"L0–L{ladder.Count - 1} {ladder[0]:0.##}–{ladder[ladder.Count - 1]:0.##} ppu"
+                          + (settings.ExtremesOnly && ladder.Count > 2 ? $" (preview: L0, L{ladder.Count - 1})" : "");
                     EditorGUILayout.LabelField($"{levels} | {imageCount} image(s)", EditorStyles.miniLabel);
 
                     string rotationNote = AreaCaptureExporter.GetRotationNote(zone, out MessageType rotationType);

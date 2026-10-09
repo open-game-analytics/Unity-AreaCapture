@@ -1,0 +1,20 @@
+# Build output (Tests~/CapturePlanCheck and any Unity host project opened directly)
+[Bb]in/
+[Oo]bj/
+
+# Unity host-project artifacts (if this package is ever opened as a project root rather than
+# added via Package Manager -> add from disk). Anchored to the repo root: Unity always generates
+# these there, and Tests~/CapturePlanCheck/CapturePlanCheck.csproj is a real, committed file.
+/[Ll]ibrary/
+/[Tt]emp/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/*.csproj
+/*.sln
+/*.unityproj
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo

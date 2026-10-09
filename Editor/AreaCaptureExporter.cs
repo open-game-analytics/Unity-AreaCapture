@@ -19,25 +19,68 @@ namespace AreaCapture.Editor
         internal const string PREF_KEY_BGCOLOR    = "AreaCapture_BGColor";
         internal const string PREF_KEY_CULLMASK   = "AreaCapture_CullMask";
         internal const string PREF_KEY_TILE       = "AreaCapture_TilePixels";
-        internal const string PREF_KEY_LODLEVELS  = "AreaCapture_LodLevels";
-        internal const string PREF_KEY_MINLEVEL   = "AreaCapture_MinLevelPixels";
+        internal const string PREF_KEY_MINPPU     = "AreaCapture_MinPPU";
+        internal const string PREF_KEY_EXTREMES   = "AreaCapture_ExtremesOnly";
+        internal const string PREF_KEY_SKIPEMPTY  = "AreaCapture_SkipEmptyTiles";
+        internal const string PREF_KEY_BGENCODE   = "AreaCapture_BackgroundEncoding";
+
+        /// <summary>The trailing "~" makes Unity's AssetDatabase skip the folder: no import, no .meta files.</summary>
+        internal const string DEFAULT_OUTDIR = "Assets/Exports~/AreaCaptures";
+
+        /// <summary>
+        /// True when Unity would import files in <paramref name="dir"/>: it lies under Assets/ or Packages/
+        /// and no path segment ends with "~" or starts with "." (the folders the AssetDatabase ignores).
+        /// </summary>
+        public static bool WouldBeImportedByUnity(string dir)
+        {
+            if (string.IsNullOrEmpty(dir)) return false;
+            string[] parts = dir.Replace('\\', '/').Split(new[] { '/' }, System.StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0 || (parts[0] != "Assets" && parts[0] != "Packages")) return false;
+            foreach (string part in parts)
+                if (part.EndsWith("~") || part.StartsWith(".")) return false;
+            return true;
+        }
+
         public static ExportSettings LoadSettingsFromPrefs()
         {
             var s = new ExportSettings
             {
                 PixelPerUnit     = EditorPrefs.GetInt(PREF_KEY_PPU, 100),
-                OutputDirectory  = EditorPrefs.GetString(PREF_KEY_OUTDIR, "Assets/Exports/AreaCaptures"),
+                OutputDirectory  = EditorPrefs.GetString(PREF_KEY_OUTDIR, DEFAULT_OUTDIR),
                 MetadataFilename = EditorPrefs.GetString(PREF_KEY_META, "capture_metadata.json"),
                 ClearFlags       = (CameraClearFlags)EditorPrefs.GetInt(PREF_KEY_CLEARFLAG, (int)CameraClearFlags.SolidColor),
                 CullingMask      = EditorPrefs.GetInt(PREF_KEY_CULLMASK, -1),
                 TilePixels    = EditorPrefs.GetInt(PREF_KEY_TILE, CapturePlanner.DefaultTilePixels),
-                LodLevels        = EditorPrefs.GetInt(PREF_KEY_LODLEVELS, CapturePlanner.DefaultLodLevels),
-                MinLevelPixels   = EditorPrefs.GetInt(PREF_KEY_MINLEVEL, CapturePlanner.DefaultMinLevelPixels),
+                MinPixelPerUnit  = EditorPrefs.GetFloat(PREF_KEY_MINPPU, CapturePlanner.DefaultMinPixelsPerUnit),
+                ExtremesOnly     = EditorPrefs.GetInt(PREF_KEY_EXTREMES, 0) != 0,
+                SkipEmptyTiles   = EditorPrefs.GetInt(PREF_KEY_SKIPEMPTY, 1) != 0,
+                BackgroundEncoding = EditorPrefs.GetInt(PREF_KEY_BGENCODE, 1) != 0,
             };
             string html = EditorPrefs.GetString(PREF_KEY_BGCOLOR, "#00000000");
             if (ColorUtility.TryParseHtmlString(html, out Color c)) s.BackgroundColor = c;
             return s;
         }
+
+        /// <summary>Most tiles whose pixels may wait for, or sit in, a writer thread at once.</summary>
+        private const int MaxTilesInFlight = 3;
+
+        /// <summary>
+        /// Memory budget for those tiles. One in flight holds its pixels and the PNG writer's scanline copy
+        /// (2 × tile_px² × 4 bytes) plus the compressed output, so large Tile Pixels allow fewer (always at least one).
+        /// </summary>
+        private const long InFlightBudgetBytes = 1L << 30;
+
+        private static int TilesInFlight(int tilePixels)
+        {
+            long perTile = 2L * tilePixels * tilePixels * 4;
+            return (int)System.Math.Max(1, System.Math.Min(MaxTilesInFlight, InFlightBudgetBytes / perTile));
+        }
+
+        /// <summary>Time spent rendering per editor frame before the UI gets a turn.</summary>
+        private const long FrameBudgetMs = 50;
+
+        /// <summary>One export at a time: they share the editor, the GPU and the progress bar.</summary>
+        private static bool exportRunning;
 
         public class ExportSettings
         {
@@ -49,11 +92,39 @@ namespace AreaCapture.Editor
             /// <summary>Largest PNG edge in pixels. Bigger areas are split into tiles instead of failing.</summary>
             public int TilePixels = CapturePlanner.DefaultTilePixels;
 
-            /// <summary>Levels of detail per face: the finest is <see cref="PixelPerUnit"/>, each further one halves it.</summary>
-            public int LodLevels = CapturePlanner.DefaultLodLevels;
+            /// <summary>
+            /// Lowest resolution a LoD level may have (0 = no floor). Levels start at <see cref="PixelPerUnit"/> and halve
+            /// until a level's whole image fits in one tile or the next one would fall below this, so the number of
+            /// levels follows from the box size and this range.
+            /// </summary>
+            public float MinPixelPerUnit = CapturePlanner.DefaultMinPixelsPerUnit;
 
-            /// <summary>A degraded level whose whole image would be shorter than this (longest edge, px) is not exported.</summary>
-            public int MinLevelPixels = CapturePlanner.DefaultMinLevelPixels;
+            /// <summary>Export only the coarsest (overview) and the finest level, a fast preview of worst and best LoD.</summary>
+            public bool ExtremesOnly;
+
+            /// <summary>
+            /// Do not write tiles that are fully transparent (nothing was rendered there) and leave them out of the
+            /// metadata, so empty parts of a box cost no disk space. Has no effect with an opaque background.
+            /// </summary>
+            public bool SkipEmptyTiles = true;
+
+            /// <summary>
+            /// Encode and write PNGs on worker threads while the next tile renders, several tiles per editor frame.
+            /// Off = the original behaviour (everything on the main thread, one tile per frame).
+            /// </summary>
+            public bool BackgroundEncoding = true;
+
+            /// <summary>
+            /// Do not write tiles that are fully transparent (nothing was rendered there) and leave them out of the
+            /// metadata, so empty parts of a box cost no disk space. Has no effect with an opaque background.
+            /// </summary>
+            public bool SkipEmptyTiles = true;
+
+            /// <summary>
+            /// Encode and write PNGs on worker threads while the next tile renders, several tiles per editor frame.
+            /// Off = the original behaviour (everything on the main thread, one tile per frame).
+            /// </summary>
+            public bool BackgroundEncoding = true;
 
             // Rendering options
             public CameraClearFlags ClearFlags = CameraClearFlags.SolidColor;
@@ -129,7 +200,7 @@ namespace AreaCapture.Editor
             {
                 if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
                 return CapturePlanner.LevelPixelsPerUnit(face, size.x, size.y, size.z,
-                    EffectivePixelsPerUnit(zone, settings), settings.LodLevels, settings.MinLevelPixels);
+                    EffectivePixelsPerUnit(zone, settings), settings.MinPixelPerUnit, EffectiveTilePixels(settings));
             }
             return new List<double>();
         }
@@ -151,7 +222,7 @@ namespace AreaCapture.Editor
             foreach (CaptureFace face in zone.FacesToExport())
             {
                 if (!CapturePlanner.FaceSupportsRotation(face, rotation)) continue;
-                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, tilePixels);
+                total += CapturePlanner.CountTiles(face, size.x, size.y, size.z, maxPpu, settings.MinPixelPerUnit, tilePixels, settings.ExtremesOnly);
             }
             return total;
         }
@@ -210,7 +281,7 @@ namespace AreaCapture.Editor
 
                     FaceMetadata faceMeta = box.GetOrAddFace(face);
                     LodMetadata lod = null;
-                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, maxPpu, settings.LodLevels, settings.MinLevelPixels, tilePixels))
+                    foreach (TileJob tile in CapturePlanner.PlanFace(face, size.x, size.y, size.z, maxPpu, settings.MinPixelPerUnit, tilePixels, settings.ExtremesOnly))
                     {
                         if (lod == null || lod.Level != tile.Level)
                         {
@@ -249,6 +320,13 @@ namespace AreaCapture.Editor
             if (settings == null)
                 settings = new ExportSettings();
 
+            if (exportRunning)
+            {
+                Debug.LogWarning("An area capture export is already running; wait for it to finish.");
+                onComplete?.Invoke(false);
+                return;
+            }
+
             ExportPlan plan = BuildPlan(zones, settings);
             foreach (string warning in plan.Warnings) Debug.LogWarning(warning);
 
@@ -265,13 +343,40 @@ namespace AreaCapture.Editor
                 Directory.CreateDirectory(settings.OutputDirectory);
             }
 
-            // Render the planned tiles one per editor frame with a state machine on EditorApplication.update
+            // Render the planned tiles with a state machine on EditorApplication.update. Rendering stays on the main
+            // thread; with BackgroundEncoding the empty check, PNG encode and file write overlap with the next render.
             var capturer = new RuntimeAreaCapture();
+            var queue = settings.BackgroundEncoding ? new TileWriteQueue(TilesInFlight(EffectiveTilePixels(settings))) : null;
+            // Legacy mode keeps the original pace of exactly one tile per editor frame
+            long frameBudgetMs = settings.BackgroundEncoding ? FrameBudgetMs : 0;
             int currentIndex = 0;
             int total = plan.Jobs.Count;
+            var skippedEmpty = new HashSet<string>();
             bool isInitializing = true;
 
+            var totalClock = System.Diagnostics.Stopwatch.StartNew();
+            long renderTicks = 0, syncEncodeTicks = 0, queueWaitTicks = 0;
+            exportRunning = true;
+
             EditorApplication.CallbackFunction updateAction = null;
+
+            // Stops the loop and releases everything; the one place every exit path goes through. Runs once: an
+            // exception thrown by onComplete must not end the export a second time (and report failure after success).
+            bool ended = false;
+            void End(bool success, string message)
+            {
+                if (ended) return;
+                ended = true;
+                EditorUtility.ClearProgressBar();
+                EditorApplication.update -= updateAction;
+                capturer.Cleanup();
+                exportRunning = false;
+                if (message != null) Debug.LogWarning(message);
+                onComplete?.Invoke(success);
+            }
+
+            double Seconds(long ticks) => (double)ticks / System.Diagnostics.Stopwatch.Frequency;
+
             updateAction = () =>
             {
                 if (isInitializing)
@@ -281,63 +386,146 @@ namespace AreaCapture.Editor
                     return;
                 }
 
-                if (currentIndex >= total)
+                try
                 {
-                    // Finished
-                    EditorUtility.ClearProgressBar();
-                    EditorApplication.update -= updateAction;
-                    capturer.Cleanup();
+                    if (currentIndex >= total)
+                    {
+                        // Finished: let the workers write the last tiles before the metadata that references them
+                        if (queue != null)
+                        {
+                            EditorUtility.DisplayProgressBar("Exporting Area Captures", "Writing the last images...", 1f);
+                            queue.Drain();
+                            if (queue.Error != null)
+                            {
+                                Debug.LogError($"Capture export failed while writing images: {queue.Error}");
+                                End(false, null);
+                                return;
+                            }
+                        }
 
-                    // Save metadata JSON
-                    string jsonPath = Path.Combine(settings.OutputDirectory, settings.MetadataFilename);
-                    File.WriteAllText(jsonPath, CaptureMetadataJson.Serialize(plan.Metadata));
+                        // Save metadata JSON (without the tiles that were skipped as empty)
+                        plan.Metadata.RemoveImages(skippedEmpty);
+                        string jsonPath = Path.Combine(settings.OutputDirectory, settings.MetadataFilename);
+                        File.WriteAllText(jsonPath, CaptureMetadataJson.Serialize(plan.Metadata));
 
-                    Debug.Log($"Export complete! {total} image(s) saved to: {settings.OutputDirectory}");
-                    onComplete?.Invoke(true);
-                    return;
+                        // Only now that the new metadata no longer lists them: delete what an earlier export left under the
+                        // names of tiles that are empty this time (with their .meta inside Assets/). Deleting them any earlier
+                        // would leave a cancelled or failed export with old metadata pointing at missing files.
+                        foreach (string skipped in skippedEmpty)
+                        {
+                            string stale = Path.Combine(settings.OutputDirectory, skipped);
+                            if (File.Exists(stale)) File.Delete(stale);
+                            if (File.Exists(stale + ".meta")) File.Delete(stale + ".meta");
+                        }
+
+                        string skipNote = skippedEmpty.Count > 0 ? $", {skippedEmpty.Count} empty tile(s) skipped" : "";
+                        double elapsed = totalClock.Elapsed.TotalSeconds;
+                        string stages = queue != null
+                            ? $"render+readback {Seconds(renderTicks):F1}s, waiting for a free writer {Seconds(queueWaitTicks):F1}s, writers busy {queue.WorkerTime.TotalSeconds:F1}s (summed over threads)"
+                            : $"render+readback {Seconds(renderTicks):F1}s, empty check+PNG+write {Seconds(syncEncodeTicks):F1}s";
+                        Debug.Log($"Export complete! {total - skippedEmpty.Count} image(s) saved to: {settings.OutputDirectory}{skipNote}\n" +
+                                  $"Timing: {elapsed:F1}s total, {total / Mathf.Max((float)elapsed, 0.001f):F1} tiles/s ({(queue != null ? "background encoding" : "legacy sequential")}); {stages}");
+                        End(true, null);
+                        return;
+                    }
+
+                    bool canceled = EditorUtility.DisplayCancelableProgressBar(
+                        "Exporting Area Captures",
+                        $"Capturing {plan.Jobs[currentIndex].Filename} ({currentIndex + 1}/{total})...",
+                        (float)currentIndex / total);
+
+                    if (canceled)
+                    {
+                        queue?.Drain();
+                        End(false, "Capture export canceled by user.");
+                        return;
+                    }
+
+                    var frameClock = System.Diagnostics.Stopwatch.StartNew();
+                    do
+                    {
+                        ExportJob job = plan.Jobs[currentIndex];
+
+                        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                        Texture2D texture = capturer.CaptureTile(
+                            job.Zone,
+                            job.Tile,
+                            settings.ClearFlags,
+                            settings.BackgroundColor,
+                            settings.CullingMask,
+                            uploadToGpu: false
+                        );
+                        renderTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+
+                        if (texture == null)
+                        {
+                            // Failed capture (e.g. out of memory)
+                            queue?.Drain();
+                            End(false, $"Capture export aborted at '{job.Filename}' due to a rendering failure.");
+                            return;
+                        }
+
+                        string path = Path.Combine(settings.OutputDirectory, job.Filename);
+                        bool skipEmpty = settings.SkipEmptyTiles;
+                        int width = texture.width, height = texture.height;
+
+                        if (queue != null)
+                        {
+                            long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                            queue.Acquire(); // bounds the pixel buffers held in memory
+                            queueWaitTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t1;
+
+                            byte[] pixels = texture.GetRawTextureData<byte>().ToArray();
+                            Object.DestroyImmediate(texture);
+
+                            string filename = job.Filename;
+                            queue.Run(() =>
+                            {
+                                if (skipEmpty && TileCoverage.IsEmpty(pixels))
+                                {
+                                    // Not written; a PNG an earlier export left under this name is deleted once the metadata is saved
+                                    lock (skippedEmpty) skippedEmpty.Add(filename);
+                                }
+                                else
+                                {
+                                    File.WriteAllBytes(path, PngWriter.EncodeRgba(pixels, width, height, bottomUp: true));
+                                }
+                            });
+                        }
+                        else
+                        {
+                            long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                            // GetRawTextureData() copies, but NativeArray.AsReadOnlySpan needs Unity 2022.2 and package.json says 2021.3
+                            if (skipEmpty && TileCoverage.IsEmpty(texture.GetRawTextureData()))
+                            {
+                                skippedEmpty.Add(job.Filename);
+                            }
+                            else
+                            {
+                                File.WriteAllBytes(path, texture.EncodeToPNG());
+                            }
+                            Object.DestroyImmediate(texture);
+                            syncEncodeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t1;
+                        }
+
+                        currentIndex++;
+
+                        if (queue != null && queue.Error != null)
+                        {
+                            queue.Drain();
+                            Debug.LogError($"Capture export failed while writing images: {queue.Error}");
+                            End(false, null);
+                            return;
+                        }
+                    } while (currentIndex < total && frameClock.ElapsedMilliseconds < frameBudgetMs);
                 }
-
-                ExportJob job = plan.Jobs[currentIndex];
-
-                bool canceled = EditorUtility.DisplayCancelableProgressBar(
-                    "Exporting Area Captures",
-                    $"Capturing {job.Filename} ({currentIndex + 1}/{total})...",
-                    (float)currentIndex / total);
-
-                if (canceled)
+                catch (System.Exception e)
                 {
-                    EditorUtility.ClearProgressBar();
-                    EditorApplication.update -= updateAction;
-                    capturer.Cleanup();
-                    Debug.LogWarning("Capture export canceled by user.");
-                    onComplete?.Invoke(false);
-                    return;
+                    // An exception inside an update callback would repeat every frame, so stop cleanly
+                    try { queue?.Drain(); } catch { /* workers never throw out of their task */ }
+                    Debug.LogException(e);
+                    End(false, "Capture export aborted by an unexpected error.");
                 }
-
-                Texture2D texture = capturer.CaptureTile(
-                    job.Zone,
-                    job.Tile,
-                    settings.ClearFlags,
-                    settings.BackgroundColor,
-                    settings.CullingMask
-                );
-
-                if (texture == null)
-                {
-                    // Failed capture (e.g. out of memory)
-                    EditorUtility.ClearProgressBar();
-                    EditorApplication.update -= updateAction;
-                    capturer.Cleanup();
-                    Debug.LogWarning($"Capture export aborted at '{job.Filename}' due to a rendering failure.");
-                    onComplete?.Invoke(false);
-                    return;
-                }
-
-                string path = Path.Combine(settings.OutputDirectory, job.Filename);
-                File.WriteAllBytes(path, texture.EncodeToPNG());
-                Object.DestroyImmediate(texture);
-
-                currentIndex++;
             };
 
             // Initial Progress Bar setup
