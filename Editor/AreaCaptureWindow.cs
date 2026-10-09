@@ -36,6 +36,8 @@ namespace AreaCapture.Editor
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_TILE, settings.TilePixels);
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_LODLEVELS, settings.LodLevels);
                 EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_MINLEVEL, settings.MinLevelPixels);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_SKIPEMPTY, settings.SkipEmptyTiles ? 1 : 0);
+                EditorPrefs.SetInt(AreaCaptureExporter.PREF_KEY_BGENCODE, settings.BackgroundEncoding ? 1 : 0);
             }
         }
 
@@ -54,6 +56,8 @@ namespace AreaCapture.Editor
             settings.MinLevelPixels = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Min Level Pixels", "Degraded levels whose whole image would be smaller than this (longest edge, in pixels) are not exported, so no tiny textures. The maximum quality level is always exported. 0 = no limit."), settings.MinLevelPixels));
             settings.TilePixels = EditorGUILayout.IntField(new GUIContent("Tile Pixels", $"Pixel size of every tile of every level: each level is cut into tiles this big, so a finer level replaces one tile with four. Tiles on the right/bottom edge and levels smaller than one tile are cropped. Limited to the GPU texture size ({SystemInfo.maxTextureSize})."), settings.TilePixels);
             settings.TilePixels = Mathf.Clamp(settings.TilePixels, 64, SystemInfo.maxTextureSize);
+            settings.SkipEmptyTiles = EditorGUILayout.Toggle(new GUIContent("Skip Empty Tiles", "Do not save tiles that are fully transparent (nothing was rendered there) and leave them out of the metadata, so empty parts of a box take no disk space. Needs a transparent background: with an opaque Background Color no tile is empty."), settings.SkipEmptyTiles);
+            settings.BackgroundEncoding = EditorGUILayout.Toggle(new GUIContent("Background Encoding", "Encode and write the PNGs on worker threads while the next tile renders, and render several tiles per editor frame. Faster; the Console logs the timing of every export. Turn off for the original one-tile-per-frame behaviour (e.g. to compare speed)."), settings.BackgroundEncoding);
 
             EditorGUILayout.Space();
 

@@ -18,14 +18,10 @@ namespace AreaCapture.Runtime
         {
             if (persistentCamera != null) return persistentCamera;
 
-            // Try to find existing hidden camera first
-            GameObject existing = GameObject.Find("_CaptureCamera_Internal");
-            if (existing != null)
-            {
-                cameraHolder = existing;
-                persistentCamera = existing.GetComponent<Camera>();
-                return persistentCamera;
-            }
+            // A camera left behind by a domain reload mid-export is stale: this instance owns its camera, so
+            // reusing a found one could hand two captures the same object (the exporter allows one at a time).
+            GameObject stale = GameObject.Find("_CaptureCamera_Internal");
+            if (stale != null) Object.DestroyImmediate(stale);
 
             cameraHolder = new GameObject("_CaptureCamera_Internal");
             cameraHolder.hideFlags = HideFlags.HideAndDontSave;
@@ -58,10 +54,11 @@ namespace AreaCapture.Runtime
         /// <summary>
         /// Renders one tile of one face of a zone. The camera looks in from the face along the zone's own
         /// axes, so a rotated zone is captured aligned to itself, and is shifted in the image plane to the
-        /// tile's centre. Returns null if the tile exceeds the hardware texture limit.
+        /// tile's centre. Returns null if the tile exceeds the hardware texture limit. With
+        /// <paramref name="uploadToGpu"/> false the texture is CPU-only (fine for <c>GetRawTextureData</c>, not for display).
         /// </summary>
         public Texture2D CaptureTile(CaptureZone zone, TileJob job, CameraClearFlags clearFlags = CameraClearFlags.SolidColor,
-            Color backgroundColor = default, int cullingMask = -1)
+            Color backgroundColor = default, int cullingMask = -1, bool uploadToGpu = true)
         {
             if (zone == null)
                 return null;
@@ -148,7 +145,8 @@ namespace AreaCapture.Runtime
                 // Always use RGBA32 to ensure alpha consistency
                 tex = new Texture2D(job.PixelWidth, job.PixelHeight, TextureFormat.RGBA32, false);
                 tex.ReadPixels(new Rect(0, 0, job.PixelWidth, job.PixelHeight), 0, 0);
-                tex.Apply();
+                // The exporter only reads the pixels on the CPU, so it skips the pointless GPU upload
+                if (uploadToGpu) tex.Apply();
             }
             finally
             {

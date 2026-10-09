@@ -60,7 +60,7 @@ namespace AreaCapture
         public const int DefaultTilePixels = 1024;
 
         /// <summary>More levels than this (each halves the resolution) would be below any useful size.</summary>
-        public const int MaxLodLevels = 8;
+        public const int MaxLodLevels = 32;
 
         /// <summary>Default for the smallest image edge a degraded LoD level may have; smaller levels are dropped.</summary>
         public const int DefaultMinLevelPixels = 256;
