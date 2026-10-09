@@ -42,6 +42,12 @@ Check(Math.Abs(t.OffsetU - -7.5f) < 1e-5 && Math.Abs(t.OffsetV - 2.5f) < 1e-5, $
 // ── cross-check against the JS demo dataset ─────────────────────────────
 // Run from this folder: dotnet run   (override with the first argument)
 var repo = args.Length > 0 ? args[0] : "../../../Dashboard/oga-dashboard/tests/fixtures/capture-lod-demo/capture_metadata.json";
+if (!File.Exists(repo))
+{
+    Console.WriteLine($"SKIP: cross-check against the JS demo dataset ('{repo}' not found)");
+}
+else
+{
 using var demoDoc = JsonDocument.Parse(File.ReadAllText(repo));
 var demo = demoDoc.RootElement;
 Eq(demo.GetProperty("schema_version").GetInt32(), 2, "demo is v2");
@@ -120,6 +126,7 @@ bool Same(JsonElement a, JsonElement b, string path, List<string> diffs)
 var diffs = new List<string>();
 Same(demo, outDoc.RootElement, "$", diffs);
 Check(diffs.Count == 0, "C# writer/planner output equals the JS demo dataset:\n  " + string.Join("\n  ", diffs.Take(15)));
+}
 
 // ── number formatting / escaping ────────────────────────────────────────
 Eq(CaptureMetadataJson.Num(-0.00001, 4), "0", "no negative zero");
