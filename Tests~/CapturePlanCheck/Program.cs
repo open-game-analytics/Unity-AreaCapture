@@ -31,10 +31,10 @@ CapturePlanner.FaceExtents(CaptureFace.Top, 25, 10, 20, out w, out h); Check(w =
 CapturePlanner.FaceExtents(CaptureFace.Right, 25, 10, 20, out w, out h); Check(w == 20 && h == 10, "right z*y (the real Zone02 PNG is 2000x1000)");
 
 // ── tile offsets ────────────────────────────────────────────────────────
-var quad = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 10, 1, 0, 100);   // 200x100 px, max 100 => 2x1
+var quad = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 10, 10, 100);   // 200x100 px, max 100 => 2x1
 Eq(quad.Count, 2, "20x10 @10ppu, max 100 => 2 tiles");
 Check(Math.Abs(quad[0].OffsetU - -5f) < 1e-5 && Math.Abs(quad[0].OffsetV) < 1e-5, "left tile centre at u=-5");
-var grid22 = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 10, 1, 0, 50);   // 200x100 px, max 50 => 4x2
+var grid22 = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 10, 10, 50);   // 200x100 px, max 50 => 4x2
 Eq(grid22.Count, 8, "4x2 tiles");
 var t = grid22.First(j => j.Col == 0 && j.Row == 0);
 Check(Math.Abs(t.OffsetU - -7.5f) < 1e-5 && Math.Abs(t.OffsetV - 2.5f) < 1e-5, $"tile 0,0 is top-left (got {t.OffsetU},{t.OffsetV})");
@@ -47,11 +47,11 @@ var demo = demoDoc.RootElement;
 Eq(demo.GetProperty("schema_version").GetInt32(), 2, "demo is v2");
 
 // Same inputs the JS generator used (see generate-demo.mjs)
-var specs = new Dictionary<string, (float[] pos, float[] size, MetaQuat rot, int levels, int tagOffset, float maxPpu)>
+var specs = new Dictionary<string, (float[] pos, float[] size, MetaQuat rot, float minPpu, int tagOffset, float maxPpu)>
 {
-    ["Overview"] = (new[] { 0f, 0f, 0f }, new[] { 100f, 50f, 10f }, MetaQuat.Identity, 3, 0, 8f),
-    ["Detail"] = (new[] { 20f, 10f, 0f }, new[] { 30f, 15f, 10f }, new MetaQuat(0, 0, 0.258819f, 0.965926f), 1, 3, 16f),
-    ["Corner"] = (new[] { -30f, -10f, 0f }, new[] { 20f, 10f, 10f }, MetaQuat.Identity, 1, 2, 8f),
+    ["Overview"] = (new[] { 0f, 0f, 0f }, new[] { 100f, 50f, 10f }, MetaQuat.Identity, 0f, 0, 8f),
+    ["Detail"] = (new[] { 20f, 10f, 0f }, new[] { 30f, 15f, 10f }, new MetaQuat(0, 0, 0.258819f, 0.965926f), 16f, 3, 16f),
+    ["Corner"] = (new[] { -30f, -10f, 0f }, new[] { 20f, 10f, 10f }, MetaQuat.Identity, 8f, 2, 8f),
 };
 
 var built = new CaptureMetadata { Scenario = "lod-demo" };
@@ -67,7 +67,7 @@ foreach (var boxJson in demo.GetProperty("boxes").EnumerateArray())
         Size = new MetaVec3(s.size[0], s.size[1], s.size[2]),
     };
     var face = box.GetOrAddFace(CaptureFace.Front);
-    var jobs = CapturePlanner.PlanFace(CaptureFace.Front, s.size[0], s.size[1], s.size[2], s.maxPpu, s.levels, 0, 200);
+    var jobs = CapturePlanner.PlanFace(CaptureFace.Front, s.size[0], s.size[1], s.size[2], s.maxPpu, s.minPpu, 200);
     foreach (var lodGroup in jobs.GroupBy(j => j.Level))
     {
         var first = lodGroup.First();
@@ -129,9 +129,9 @@ Eq(CaptureMetadataJson.Num(0.965926, 6), "0.965926", "quaternion precision");
 Eq(CaptureMetadataJson.Quote("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"", "escapes");
 
 // ── planner guards ──────────────────────────────────────────────────────
-try { CapturePlanner.PlanFace(CaptureFace.Front, 1, 1, 1, 0, 1, 0, 4096); Check(false, "ppu 0 must throw"); } catch (ArgumentOutOfRangeException) { Check(true, ""); }
-Eq(CapturePlanner.PlanFace(CaptureFace.Front, 1, 1, 1, 100, 99, 0, 4096).Select(j => j.Level).Max(), CapturePlanner.MaxLodLevels - 1, "level count clamped");
-var big = CapturePlanner.PlanFace(CaptureFace.Front, 1000, 1000, 1, 100, 1, 0, 4096);  // 100000 px per side
+try { CapturePlanner.PlanFace(CaptureFace.Front, 1, 1, 1, 0, 0, 4096); Check(false, "ppu 0 must throw"); } catch (ArgumentOutOfRangeException) { Check(true, ""); }
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 1).Count is > 1 and <= CapturePlanner.MaxLodLevels, "1 px tiles: the ladder still terminates within MaxLodLevels");
+var big = CapturePlanner.PlanFace(CaptureFace.Front, 1000, 1000, 1, 100, 100, 4096);  // 100000 px per side
 Eq(big.Count, 25 * 25, "huge box tiles instead of aborting");
 Check(big.All(j => j.PixelWidth <= 4096 && j.PixelHeight <= 4096), "no tile exceeds the limit");
 
@@ -144,34 +144,51 @@ for (int n = 0; n < 2000; n++)
     var face = (CaptureFace)rng.Next(0, 6);
     float sx = (float)(rng.NextDouble() * 200 + 0.1), sy = (float)(rng.NextDouble() * 200 + 0.1), sz = (float)(rng.NextDouble() * 200 + 0.1);
     float ppu = (float)(rng.NextDouble() * 60 + 0.5);
-    int levels = rng.Next(1, 6);
     int max = new[] { 64, 200, 512, 4096, 8192 }[rng.Next(5)];
-    int minPx = new[] { 0, 64, 256, 1000 }[rng.Next(4)];
-    if (CapturePlanner.CountTiles(face, sx, sy, sz, ppu, levels, minPx, max) != CapturePlanner.PlanFace(face, sx, sy, sz, ppu, levels, minPx, max).Count) mismatches++;
+    double minPpu = new[] { 0, ppu / 8, ppu / 2, ppu, ppu * 2 }[rng.Next(5)];
+    bool extremes = rng.Next(2) == 0;
+    if (CapturePlanner.CountTiles(face, sx, sy, sz, ppu, minPpu, max, extremes) != CapturePlanner.PlanFace(face, sx, sy, sz, ppu, minPpu, max, extremes).Count) mismatches++;
 }
 Eq(mismatches, 0, "CountTiles == PlanFace count over 2000 random inputs");
-Eq(CapturePlanner.CountTiles(CaptureFace.Front, 1, 1, 1, 0, 1, 0, 4096), 0, "CountTiles guards ppu <= 0");
+Eq(CapturePlanner.CountTiles(CaptureFace.Front, 1, 1, 1, 0, 0, 4096), 0, "CountTiles guards ppu <= 0");
 
 // ── LoD ladder: ppu is the max quality, levels degrade down from it ─────
-var ladder = CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 0);
-Check(ladder.SequenceEqual(new[] { 12.5, 25, 50, 100 }), $"4 levels @100 => 12.5/25/50/100 coarsest first (got {string.Join("/", ladder)})");
-var ladderJobs = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 4, 0, 4096);
-Eq(ladderJobs.Select(j => j.Level).Distinct().OrderBy(l => l).ToList().Count, 4, "4 level tags");
-Eq(ladderJobs.Where(j => j.Level == 3).Select(j => j.PixelsPerUnit).Distinct().Single(), 100f, "top tag is the requested max ppu");
-Eq(ladderJobs.Where(j => j.Level == 0).Select(j => j.PixelsPerUnit).Distinct().Single(), 12.5f, "L0 is the coarsest");
+// 20x10 units @100 ppu = 2000x1000 px; with 512 px tiles the longest edge is 2000/1000/500 px at 100/50/25 ppu
+var ladder = CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 512);
+Check(ladder.SequenceEqual(new[] { 25.0, 50, 100 }), $"halves until the whole box fits one tile => 25/50/100 coarsest first (got {string.Join("/", ladder)})");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 500).SequenceEqual(new[] { 25.0, 50, 100 }), "a level exactly the tile size fits and is the overview");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 499).SequenceEqual(new[] { 12.5, 25, 50, 100 }), "one px too big => one more level");
+Check(CapturePlanner.LevelPixelsPerUnit(0.5f, 0.5f, 100, 0, 1024).SequenceEqual(new[] { 100.0 }), "a box that fits one tile at max ppu has a single level");
+var ladderJobs = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 0, 512);
+Eq(ladderJobs.Select(j => j.Level).Distinct().OrderBy(l => l).ToList().Count, 3, "3 level tags");
+Eq(ladderJobs.Where(j => j.Level == 2).Select(j => j.PixelsPerUnit).Distinct().Single(), 100f, "top tag is the requested max ppu");
+Eq(ladderJobs.Where(j => j.Level == 0).Select(j => j.PixelsPerUnit).Distinct().Single(), 25f, "L0 is the coarsest");
+Eq(ladderJobs.Count(j => j.Level == 0), 1, "the overview is a single tile");
 Check(ladderJobs.All(j => j.PixelsPerUnit <= 100f), "no level is rendered above the requested ppu");
-Eq(CapturePlanner.LevelPixelsPerUnit(20, 10, 1, 1, 0).Count, 1, "single level = only the max");
 
-// min pixels: longest face edge 20 units => 2000/1000/500/250 px at 100/50/25/12.5 ppu
-Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 256).SequenceEqual(new[] { 25.0, 50, 100 }), "250 px level dropped at min 256");
-Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 250).SequenceEqual(new[] { 12.5, 25, 50, 100 }), "level exactly at the min is kept");
-Check(CapturePlanner.LevelPixelsPerUnit(0.5f, 0.5f, 100, 4, 256).SequenceEqual(new[] { 100.0 }), "max level kept even when below the min");
-Eq(CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 4, 256, 4096).Max(j => j.Level), 2, "tags renumbered from 0 after dropping");
-Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 99, 0).Count == CapturePlanner.MaxLodLevels, "level count clamped to MaxLodLevels");
-Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 0).SequenceEqual(new[] { 100.0 }), "level count < 1 treated as 1");
-Check(CapturePlanner.LevelPixelsPerUnit(CaptureFace.Right, 25, 10, 20, 100, 4, 0).SequenceEqual(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 4, 0)), "face overload uses the face extents");
+// min ppu: the ladder never goes below it, even if the box does not fit one tile yet; the max level is always kept
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 50, 512).SequenceEqual(new[] { 50.0, 100 }), "min 50 stops the ladder at 50");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 40, 512).SequenceEqual(new[] { 50.0, 100 }), "min between two levels drops the lower one");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 25, 512).SequenceEqual(new[] { 25.0, 50, 100 }), "level exactly at the min is kept");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 100, 512).SequenceEqual(new[] { 100.0 }), "min = max => only the max level");
+Check(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 150, 512).SequenceEqual(new[] { 100.0 }), "min above max still keeps the max level");
+Check(CapturePlanner.LevelPixelsPerUnit(CaptureFace.Right, 25, 10, 20, 100, 0, 512).SequenceEqual(CapturePlanner.LevelPixelsPerUnit(20, 10, 100, 0, 512)), "face overload uses the face extents");
+
+// overview + best only: the coarsest and finest level, with their real tags
+Eq(string.Join(",", CapturePlanner.LevelTags(4, true)), "0,3", "extremes of 4 levels");
+Eq(string.Join(",", CapturePlanner.LevelTags(3, true)), "0,2", "extremes of 3 levels");
+Eq(string.Join(",", CapturePlanner.LevelTags(2, true)), "0,1", "2 levels are already the extremes");
+Eq(string.Join(",", CapturePlanner.LevelTags(1, true)), "0", "1 level stays");
+Eq(string.Join(",", CapturePlanner.LevelTags(4, false)), "0,1,2,3", "all levels");
+var fullJobs = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 0, 250);          // 4 levels
+var previewJobs = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 100, 0, 250, extremesOnly: true);
+Eq(string.Join(",", fullJobs.Select(j => j.Level).Distinct()), "0,1,2,3", "full plan has 4 levels");
+Eq(string.Join(",", previewJobs.Select(j => j.Level).Distinct()), "0,3", "preview keeps L0 and the finest, tags unchanged");
+Check(previewJobs.All(p => fullJobs.Any(f => f.Level == p.Level && f.Col == p.Col && f.Row == p.Row && f.PixelsPerUnit == p.PixelsPerUnit
+    && f.OffsetU == p.OffsetU && f.OffsetV == p.OffsetV)), "every preview tile is identical to the same tile of the full plan");
+Eq(previewJobs.Count, fullJobs.Count(j => j.Level == 0 || j.Level == 3), "preview = exactly the L0 and finest tiles");
 // ── constant tile size: anchored at the top-left, cropped only at the right/bottom, a quadtree across levels ──
-var cropped = CapturePlanner.PlanFace(CaptureFace.Front, 30, 15, 1, 16, 1, 0, 200);   // 480x240 px => 3x2 tiles of 200 px
+var cropped = CapturePlanner.PlanFace(CaptureFace.Front, 30, 15, 1, 16, 16, 200);   // 480x240 px => 3x2 tiles of 200 px
 Eq(cropped.Count, 6, "480x240 px in 200 px tiles => 3x2");
 Check(cropped.All(j => j.TilePixels == 200), "tile size recorded on every job");
 Eq(string.Join(",", cropped.Where(j => j.Row == 0).Select(j => j.PixelWidth)), "200,200,80", "columns are 200,200 and a cropped 80");
@@ -179,7 +196,7 @@ Eq(string.Join(",", cropped.Where(j => j.Col == 0).Select(j => j.PixelHeight)), 
 var corner = cropped.First(j => j.Col == 2 && j.Row == 1);
 Check(Math.Abs(corner.TileWidthUnits - 5f) < 1e-5 && Math.Abs(corner.TileHeightUnits - 2.5f) < 1e-5, "cropped tile covers 5 x 2.5 units");
 Check(Math.Abs(corner.OffsetU - 12.5f) < 1e-4 && Math.Abs(corner.OffsetV - -6.25f) < 1e-4, $"cropped corner tile centre (got {corner.OffsetU},{corner.OffsetV})");
-var small = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 4, 1, 0, 1024);       // 80x40 px: one tile smaller than the tile size
+var small = CapturePlanner.PlanFace(CaptureFace.Front, 20, 10, 1, 4, 4, 1024);       // 80x40 px: one tile smaller than the tile size
 Eq(small.Count, 1, "a level smaller than one tile is a single tile");
 Check(small[0].PixelWidth == 80 && small[0].PixelHeight == 40 && small[0].TilePixels == 1024, "...cropped to the face, tile size still nominal");
 
@@ -190,7 +207,7 @@ for (int n = 0; n < 500; n++)
     float sx = (float)(qrng.NextDouble() * 150 + 1), sy = (float)(qrng.NextDouble() * 150 + 1);
     float ppu = (float)(qrng.NextDouble() * 30 + 1);
     int tile = new[] { 64, 200, 512 }[qrng.Next(3)];
-    var jobsQ = CapturePlanner.PlanFace(CaptureFace.Front, sx, sy, 1, ppu, qrng.Next(2, 6), 0, tile);
+    var jobsQ = CapturePlanner.PlanFace(CaptureFace.Front, sx, sy, 1, ppu, 0, tile);
     foreach (var j in jobsQ)
     {
         if ((j.Col < j.Cols - 1 && j.PixelWidth != tile) || (j.Row < j.Rows - 1 && j.PixelHeight != tile) || j.PixelWidth > tile || j.PixelHeight > tile) notConstant++;
