@@ -61,8 +61,20 @@ namespace AreaCapture.Editor
             return s;
         }
 
-        /// <summary>Tiles whose pixels may wait for a writer thread at once (each is tile_px² × 4 bytes).</summary>
+        /// <summary>Most tiles whose pixels may wait for, or sit in, a writer thread at once.</summary>
         private const int MaxTilesInFlight = 3;
+
+        /// <summary>
+        /// Memory budget for those tiles. One in flight holds its pixels and the PNG writer's scanline copy
+        /// (2 × tile_px² × 4 bytes) plus the compressed output, so large Tile Pixels allow fewer (always at least one).
+        /// </summary>
+        private const long InFlightBudgetBytes = 1L << 30;
+
+        private static int TilesInFlight(int tilePixels)
+        {
+            long perTile = 2L * tilePixels * tilePixels * 4;
+            return (int)System.Math.Max(1, System.Math.Min(MaxTilesInFlight, InFlightBudgetBytes / perTile));
+        }
 
         /// <summary>Time spent rendering per editor frame before the UI gets a turn.</summary>
         private const long FrameBudgetMs = 50;
@@ -89,6 +101,18 @@ namespace AreaCapture.Editor
 
             /// <summary>Export only the coarsest (overview) and the finest level, a fast preview of worst and best LoD.</summary>
             public bool ExtremesOnly;
+
+            /// <summary>
+            /// Do not write tiles that are fully transparent (nothing was rendered there) and leave them out of the
+            /// metadata, so empty parts of a box cost no disk space. Has no effect with an opaque background.
+            /// </summary>
+            public bool SkipEmptyTiles = true;
+
+            /// <summary>
+            /// Encode and write PNGs on worker threads while the next tile renders, several tiles per editor frame.
+            /// Off = the original behaviour (everything on the main thread, one tile per frame).
+            /// </summary>
+            public bool BackgroundEncoding = true;
 
             /// <summary>
             /// Do not write tiles that are fully transparent (nothing was rendered there) and leave them out of the
@@ -322,7 +346,7 @@ namespace AreaCapture.Editor
             // Render the planned tiles with a state machine on EditorApplication.update. Rendering stays on the main
             // thread; with BackgroundEncoding the empty check, PNG encode and file write overlap with the next render.
             var capturer = new RuntimeAreaCapture();
-            var queue = settings.BackgroundEncoding ? new TileWriteQueue(MaxTilesInFlight) : null;
+            var queue = settings.BackgroundEncoding ? new TileWriteQueue(TilesInFlight(EffectiveTilePixels(settings))) : null;
             // Legacy mode keeps the original pace of exactly one tile per editor frame
             long frameBudgetMs = settings.BackgroundEncoding ? FrameBudgetMs : 0;
             int currentIndex = 0;
@@ -336,9 +360,13 @@ namespace AreaCapture.Editor
 
             EditorApplication.CallbackFunction updateAction = null;
 
-            // Stops the loop and releases everything; the one place every exit path goes through
+            // Stops the loop and releases everything; the one place every exit path goes through. Runs once: an
+            // exception thrown by onComplete must not end the export a second time (and report failure after success).
+            bool ended = false;
             void End(bool success, string message)
             {
+                if (ended) return;
+                ended = true;
                 EditorUtility.ClearProgressBar();
                 EditorApplication.update -= updateAction;
                 capturer.Cleanup();
@@ -379,6 +407,16 @@ namespace AreaCapture.Editor
                         plan.Metadata.RemoveImages(skippedEmpty);
                         string jsonPath = Path.Combine(settings.OutputDirectory, settings.MetadataFilename);
                         File.WriteAllText(jsonPath, CaptureMetadataJson.Serialize(plan.Metadata));
+
+                        // Only now that the new metadata no longer lists them: delete what an earlier export left under the
+                        // names of tiles that are empty this time (with their .meta inside Assets/). Deleting them any earlier
+                        // would leave a cancelled or failed export with old metadata pointing at missing files.
+                        foreach (string skipped in skippedEmpty)
+                        {
+                            string stale = Path.Combine(settings.OutputDirectory, skipped);
+                            if (File.Exists(stale)) File.Delete(stale);
+                            if (File.Exists(stale + ".meta")) File.Delete(stale + ".meta");
+                        }
 
                         string skipNote = skippedEmpty.Count > 0 ? $", {skippedEmpty.Count} empty tile(s) skipped" : "";
                         double elapsed = totalClock.Elapsed.TotalSeconds;
@@ -445,9 +483,8 @@ namespace AreaCapture.Editor
                             {
                                 if (skipEmpty && TileCoverage.IsEmpty(pixels))
                                 {
+                                    // Not written; a PNG an earlier export left under this name is deleted once the metadata is saved
                                     lock (skippedEmpty) skippedEmpty.Add(filename);
-                                    // A tile left by an earlier export would otherwise stay on disk unreferenced
-                                    if (File.Exists(path)) File.Delete(path);
                                 }
                                 else
                                 {
@@ -458,10 +495,10 @@ namespace AreaCapture.Editor
                         else
                         {
                             long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
-                            if (skipEmpty && TileCoverage.IsEmpty(texture.GetRawTextureData<byte>().AsReadOnlySpan()))
+                            // GetRawTextureData() copies, but NativeArray.AsReadOnlySpan needs Unity 2022.2 and package.json says 2021.3
+                            if (skipEmpty && TileCoverage.IsEmpty(texture.GetRawTextureData()))
                             {
                                 skippedEmpty.Add(job.Filename);
-                                if (File.Exists(path)) File.Delete(path);
                             }
                             else
                             {

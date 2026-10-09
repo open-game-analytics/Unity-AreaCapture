@@ -86,6 +86,7 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 - `size` is the box's **oriented** size (collider size × scale), and `position` its world centre.
 - Files are named `{Name}_{Face}_L{level}_{col}x{row}.png`; `row` 0 is the top of the box.
 - Every level is cut into tiles of one constant size, **Tile Pixels** (default 1024), anchored at the top-left corner of the box: `tile_size` in the metadata. Only the last column/row of tiles (and a level smaller than one tile) is cropped to the box.
+- With **Skip Empty Tiles** a level lists only the tiles in which something was rendered, so `images` can hold fewer than `columns × rows` entries.
 
 ## Levels of detail
 
@@ -93,7 +94,7 @@ Metadata **schema v2** (see the dashboard's `docs/Capture Metadata v2.md`): box 
 
 **Min Pixel Per Unit** sets a floor: the ladder stops before going below it, even if the box does not fit one tile yet, so no needlessly low-resolution textures are written. The finest level is always exported, so a small zone gets fewer levels than a large one.
 
-A zone can set its own **Pixel Per Unit Override** (its max quality) — e.g. for a hand-placed detail area inside a bigger zone. Zones can overlap and be placed, sized and rotated freely. Note: level tags are per box (every box starts at `L0`).
+A zone can set its own **Pixel Per Unit Override** (its max quality) — e.g. for a hand-placed detail area inside a bigger zone. Zones can overlap and be placed, sized and rotated freely. Note: level tags are per box (every box starts at `L0`, unless Skip Empty Tiles dropped its coarsest levels because nothing showed at their resolution).
 
 **Rotation:** a zone may be rotated about **one** world axis. Only the faces looking along that axis are exported (rotation about Y → `Top`/`Bottom`, Z → `Front`/`Back`, X → `Left`/`Right`); a zone tilted about several axes is skipped with a warning.
 

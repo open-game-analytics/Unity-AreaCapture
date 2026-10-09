@@ -55,6 +55,8 @@ namespace AreaCapture.Editor
             settings.MinPixelPerUnit = Mathf.Clamp(EditorGUILayout.FloatField(new GUIContent("Min Pixel Per Unit", "Lowest resolution a LoD level may have: the ladder stops before going below it, even if the whole box would not yet fit in one tile. The maximum quality level is always exported. 0 = no floor."), settings.MinPixelPerUnit), 0f, Mathf.Max(1, settings.PixelPerUnit));
             settings.TilePixels = EditorGUILayout.IntField(new GUIContent("Tile Pixels", $"Pixel size of every tile of every level: each level is cut into tiles this big, so a finer level replaces one tile with four. Tiles on the right/bottom edge and levels smaller than one tile are cropped. Limited to the GPU texture size ({SystemInfo.maxTextureSize})."), settings.TilePixels);
             settings.TilePixels = Mathf.Clamp(settings.TilePixels, 64, SystemInfo.maxTextureSize);
+            settings.SkipEmptyTiles = EditorGUILayout.Toggle(new GUIContent("Skip Empty Tiles", "Do not save tiles that are fully transparent (nothing was rendered there) and leave them out of the metadata, so empty parts of a box take no disk space. Needs a transparent background: with an opaque Background Color no tile is empty."), settings.SkipEmptyTiles);
+            settings.BackgroundEncoding = EditorGUILayout.Toggle(new GUIContent("Background Encoding", "Encode and write the PNGs on worker threads while the next tile renders, and render several tiles per editor frame. Faster; the Console logs the timing of every export. Turn off for the original one-tile-per-frame behaviour (e.g. to compare speed)."), settings.BackgroundEncoding);
 
             EditorGUILayout.Space();
 
