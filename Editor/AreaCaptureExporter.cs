@@ -114,18 +114,6 @@ namespace AreaCapture.Editor
             /// </summary>
             public bool BackgroundEncoding = true;
 
-            /// <summary>
-            /// Do not write tiles that are fully transparent (nothing was rendered there) and leave them out of the
-            /// metadata, so empty parts of a box cost no disk space. Has no effect with an opaque background.
-            /// </summary>
-            public bool SkipEmptyTiles = true;
-
-            /// <summary>
-            /// Encode and write PNGs on worker threads while the next tile renders, several tiles per editor frame.
-            /// Off = the original behaviour (everything on the main thread, one tile per frame).
-            /// </summary>
-            public bool BackgroundEncoding = true;
-
             // Rendering options
             public CameraClearFlags ClearFlags = CameraClearFlags.SolidColor;
             public Color BackgroundColor = new Color(0, 0, 0, 0); // Transparent black by default
