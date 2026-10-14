@@ -174,8 +174,8 @@ namespace AreaCapture.Editor
 
         /// <summary>
         /// The pixels per unit of each LoD level (coarsest first, list index = level tag) a zone would export for its
-        /// first exportable face. Empty if the zone cannot be exported. For a cubemap zone other faces may keep
-        /// fewer levels, since the minimum size is checked against each face's own extent.
+        /// first exportable face. Empty if the zone cannot be exported. For a cubemap zone other faces may have a
+        /// different number of levels, since the "whole image fits in one tile" stop depends on each face's own extent.
         /// </summary>
         public static List<double> LevelLadder(CaptureZone zone, ExportSettings settings)
         {

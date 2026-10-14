@@ -209,8 +209,8 @@ namespace AreaCapture.Editor
             EditorGUILayout.HelpBox(
                 "1. Add CaptureZone component to GameObjects you want to capture\n" +
                 "2. Place, scale and rotate the box freely (rotation about one axis is supported)\n" +
-                "3. Set 'Pixel Per Unit' to the best quality you want; 'Lod Levels' adds smaller, halved resolutions below it\n" +
-                "4. 'Min Level Pixels' drops degraded levels that would be tiny; a zone can override Pixel Per Unit\n" +
+                "3. Set 'Max Pixel Per Unit' to the best quality you want; smaller, halved resolutions are derived below it until a level fits in one 'Tile Pixels' tile\n" +
+                "4. 'Min Pixel Per Unit' stops the halving before levels get tiny (0 = no floor); a zone can override the maximum\n" +
                 "5. Use the list above to select specific zones if needed\n" +
                 "6. Click 'Export' to render and save files",
                 MessageType.Info);

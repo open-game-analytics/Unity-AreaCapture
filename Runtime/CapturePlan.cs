@@ -51,7 +51,8 @@ namespace AreaCapture
     }
 
     /// <summary>
-    /// The rules that turn "a box, a maximum resolution and some LoD levels" into a list of tile renders.
+    /// The rules that turn "a box, a resolution range and a tile size" into a list of tile renders; the LoD levels
+    /// follow from them (see <see cref="LevelPixelsPerUnit(float, float, double, double, int)"/>).
     /// Pure functions, no Unity types.
     /// </summary>
     public static class CapturePlanner
